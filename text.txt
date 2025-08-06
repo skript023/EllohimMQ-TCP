@@ -1,0 +1,62 @@
+void worker::run() {
+    ConnectionOptions opts;
+    opts.host = "redis-16204.c334.asia-southeast2-1.gce.redns.redis-cloud.com";
+    opts.port = 16204;
+    opts.user = "default";
+    opts.password = "Vp0sUt3QT6b0wP57FOyy7Q7Q38jG13Fs";
+
+    Redis redis(opts);
+
+    while (running) {
+        try {
+            // Menentukan stream dan ID-nya
+            std::vector<std::pair<std::string, std::string>> streams = {
+                {stream, "0"}
+            };
+
+            // Container untuk hasil
+            std::vector<std::pair<std::string,
+                std::vector<std::pair<std::string,
+                    std::vector<std::pair<std::string, std::string>>>>>> raw_entries;
+
+            // Memanggil xreadgroup dengan iterator
+            //LOG(INFO) << "[Worker " << consumer_name << "] Reading from stream...\n";
+            redis.xreadgroup(group, consumer_name, stream, ">", 10, false, std::back_inserter(raw_entries));
+
+            //LOG(INFO) << "[Worker " << consumer_name << "] Read done. Entries: " << raw_entries.size();
+
+            // Convert ke struktur sederhana
+            std::vector<std::pair<std::string, std::vector<StreamEntry>>> result;
+            for (auto& [stream_key, entries] : raw_entries) {
+                std::vector<StreamEntry> converted;
+                for (auto& [id, fields] : entries) {
+                    converted.push_back(StreamEntry{ id, std::move(fields) });
+                }
+                result.emplace_back(stream_key, std::move(converted));
+            }
+
+            // Proses job
+            for (const auto& [stream_key, entries] : result) {
+                for (const auto& entry : entries) {
+                    const auto& job_id = entry.id;
+                    //LOG(INFO) << ">> ID: " << job_id;
+                    auto it = std::find_if(
+                        entry.fields.begin(), entry.fields.end(),
+                        [](const auto& kv) { return kv.first == "data"; }
+                    );
+                    
+                    if (it != entry.fields.end()) {
+                        const std::string& data = it->second;
+
+                        process_job(data);
+                        LOG(INFO) << "[Worker Executed]";
+                        redis.xack(stream, group, { job_id });
+                    }
+                }
+            }
+
+        } catch (const Error& err) {
+            std::cerr << "[Worker " << consumer_name << "] Redis error: " << err.what() << std::endl;
+        }
+    }
+}
