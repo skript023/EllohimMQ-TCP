@@ -6,7 +6,7 @@ namespace ellohim
         : sock_fd(socket_fd) 
     {}
 
-    async<void> TcpConnection::start()
+    void TcpConnection::start()
     {
         char buffer[1024];
         for (;;) 
@@ -16,13 +16,12 @@ namespace ellohim
             {
                 if (close_handler) close_handler();
                 CLOSESOCKET(sock_fd);
-                co_return;
+                return;
             }
             if (read_handler) 
             {
                 read_handler(std::string(buffer, len));
             }
-            co_await sleep_for(std::chrono::milliseconds(1)); // memberi kesempatan scheduler
         }
     }
 

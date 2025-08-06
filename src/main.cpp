@@ -49,12 +49,20 @@ int main()
             LOG(INFO) << "[Server] Client disconnected";
         });
 
-        run_sync(conn->start());
+        conn->start();
         LOG(INFO) << "[Server] New client connected";
     });
 
     LOG(INFO) << "[Server] Broker started on port " << PORT;
-    server.start();
+    std::thread([&server] {
+        server.start();
+    }).join();
+
+    while (true)
+    {
+        scheduler::tick();
+        std::this_thread::sleep_for(100ms);
+    }
 
     return 0;
 }

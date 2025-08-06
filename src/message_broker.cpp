@@ -5,12 +5,10 @@ namespace ellohim
 {
     void MessageBroker::publish(const std::string& topic, const std::string& message)
     {
-        std::lock_guard<std::mutex> lock(broker_mutex);
-
         // Kalau ada handler, jalankan langsung
         if (auto it = topic_handlers.find(topic); it != topic_handlers.end())
         {
-            it->second(message);
+            run_sync(it->second(message));
             return;
         }
 
@@ -21,14 +19,12 @@ namespace ellohim
 
     void MessageBroker::subscribe(const std::string& topic, std::shared_ptr<TcpConnection> conn) 
     {
-        std::lock_guard<std::mutex> lock(broker_mutex);
         subscribers[topic].push_back(conn); // otomatis jadi weak_ptr (dari shared_ptr)
-        std::cout << "[Broker] New subscriber on topic: " << topic << "\n";
+        LOG(INFO) << "[Broker] New subscriber on topic: " << topic;
     }
 
     void MessageBroker::register_topic_handler(const std::string& topic, TopicHandler handler)
     {
-        std::lock_guard<std::mutex> lock(broker_mutex);
         topic_handlers[topic] = std::move(handler);
     }
 

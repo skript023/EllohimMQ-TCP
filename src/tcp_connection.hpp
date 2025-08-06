@@ -11,7 +11,7 @@ namespace ellohim
 
         explicit TcpConnection(socket_t socket_fd);
 
-        async<void> start();   // coroutine start
+        void start();   // coroutine start
 
         void send(const std::string& message);
 
