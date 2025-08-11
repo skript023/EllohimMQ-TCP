@@ -15,14 +15,16 @@ namespace ellohim
     public:
         static void schedule(std::coroutine_handle<> h)
         {
-            if (h && !h.done()) {
+            if (h && !h.done()) 
+            {
                 instance().schedule_impl(h);
             }
         }
 
         static void schedule_after(std::chrono::milliseconds delay, std::coroutine_handle<> h)
         {
-            if (h && !h.done()) {
+            if (h && !h.done())
+            {
                 instance().schedule_after_impl(delay, h);
             }
         }
@@ -43,21 +45,23 @@ namespace ellohim
         }
 
         // Metode statis baru untuk memberikan sinyal bahwa sebuah coroutine telah selesai
-        static void cleanup_handle(std::coroutine_handle<> h) {
+        static void cleanup_handle(std::coroutine_handle<> h)
+        {
             if (h && h.address()) {
                 instance().cleanup_handle_impl(h);
             }
         }
 
     private:
-        static scheduler& instance() {
+        static scheduler& instance()
+        {
             static scheduler s;
             return s;
         }
 
         void run_impl()
         {
-            LOG(INFO) << "[Scheduler] Run() called. Processing tasks until all queues are empty.";
+            LOG(VERBOSE) << "[Scheduler] Run() called. Processing tasks until all queues are empty.";
             std::unique_lock<std::mutex> lock(tasks_mutex);
             while (!tasks.empty() || !delayed_tasks.empty() || !cleanup_tasks.empty())
             {
@@ -70,7 +74,8 @@ namespace ellohim
         void start_impl()
         {
             bool expected = false;
-            if (!running.compare_exchange_strong(expected, true)) {
+            if (!running.compare_exchange_strong(expected, true)) 
+            {
                 LOG(WARNING) << "[Scheduler] Already running";
                 return;
             }
@@ -79,7 +84,8 @@ namespace ellohim
 
             g_thread_pool->queue_job([this] {
                 LOG(INFO) << "[Scheduler] Scheduler thread started";
-                while (running.load()) {
+                while (running.load())
+                {
                     try
                     {
                         tick_impl();
@@ -103,56 +109,66 @@ namespace ellohim
             running.store(false);
         }
 
-        void schedule_impl(std::coroutine_handle<> h) {
-            if (!h || h.address() == nullptr) {
+        void schedule_impl(std::coroutine_handle<> h) 
+        {
+            if (!h || h.address() == nullptr) 
+            {
                 LOG(WARNING) << "[Scheduler] Attempted to schedule invalid handle";
                 return;
             }
 
-            if (h.done()) {
-                LOG(INFO) << "[Scheduler] Handle already done, not scheduling " << h.address();
+            if (h.done()) 
+            {
+                LOG(VERBOSE) << "[Scheduler] Handle already done, not scheduling " << h.address();
                 return;
             }
 
             std::unique_lock<std::mutex> lock(tasks_mutex);
 
-            if (h.done()) {
-                LOG(INFO) << "[Scheduler] Handle became done while waiting for lock " << h.address();
+            if (h.done()) 
+            {
+                LOG(VERBOSE) << "[Scheduler] Handle became done while waiting for lock " << h.address();
                 return;
             }
 
             auto addr = h.address();
-            if (handle_refs.find(addr) == handle_refs.end()) {
+            if (handle_refs.find(addr) == handle_refs.end()) 
+            {
                 handle_refs[addr] = 1;
                 tasks.push(h);
-                LOG(INFO) << "[Scheduler] Scheduled new task " << addr << " (queue size: " << tasks.size() << ")";
+                LOG(VERBOSE) << "[Scheduler] Scheduled new task " << addr << " (queue size: " << tasks.size() << ")";
             }
-            else {
-                LOG(VERBOSE) << "[Scheduler] Handle already in queue " << addr;
+            else 
+            {
+                LOG(WARNING) << "[Scheduler] Handle already in queue " << addr;
             }
         }
 
-        void schedule_after_impl(std::chrono::milliseconds delay, std::coroutine_handle<> h) {
-            if (!h || h.address() == nullptr) {
+        void schedule_after_impl(std::chrono::milliseconds delay, std::coroutine_handle<> h) 
+        {
+            if (!h || h.address() == nullptr)
+            {
                 LOG(WARNING) << "[Scheduler] Attempted to schedule_after invalid handle";
                 return;
             }
 
-            if (h.done()) {
-                LOG(INFO) << "[Scheduler] Handle already done, not scheduling delayed " << h.address();
+            if (h.done())
+            {
+                LOG(VERBOSE) << "[Scheduler] Handle already done, not scheduling delayed " << h.address();
                 return;
             }
 
             std::lock_guard<std::mutex> lock(delayed_mutex);
             auto time = Clock::now() + delay;
             delayed_tasks.emplace(time, h);
-            LOG(INFO) << "[Scheduler] Scheduled delayed task " << h.address() << " for " << delay.count() << "ms";
+            LOG(VERBOSE) << "[Scheduler] Scheduled delayed task " << h.address() << " for " << delay.count() << "ms";
         }
 
-        void cleanup_handle_impl(std::coroutine_handle<> h) {
+        void cleanup_handle_impl(std::coroutine_handle<> h) 
+        {
             std::lock_guard<std::mutex> lock(cleanup_mutex);
             cleanup_tasks.push(h);
-            LOG(INFO) << "[Scheduler] Task signaled for cleanup " << h.address();
+            LOG(VERBOSE) << "[Scheduler] Task signaled for cleanup " << h.address();
         }
 
         void tick_impl()
@@ -170,17 +186,21 @@ namespace ellohim
             }
 
             std::lock_guard<std::mutex> tasks_lock(tasks_mutex);
-            while (!local_cleanup_tasks.empty()) {
+            while (!local_cleanup_tasks.empty())
+            {
                 auto h = local_cleanup_tasks.front();
                 local_cleanup_tasks.pop();
 
                 auto addr = h.address();
                 auto it = handle_refs.find(addr);
-                if (it != handle_refs.end()) {
+                if (it != handle_refs.end())
+                {
                     it->second--;
-                    if (it->second <= 0) {
+                    if (it->second <= 0) 
+                    {
                         handle_refs.erase(it);
-                        if (h && h.address()) {
+                        if (h && h.address())
+                        {
                             LOG(INFO) << "[Scheduler] Destroying coroutine handle " << addr;
                             h.destroy();
                         }
@@ -189,27 +209,32 @@ namespace ellohim
             }
         }
 
-        void process_immediate_tasks() {
+        void process_immediate_tasks()
+        {
             std::vector<std::coroutine_handle<>> local_tasks;
 
             {
                 std::lock_guard<std::mutex> lock(tasks_mutex);
                 if (tasks.empty()) return;
 
-                while (!tasks.empty()) {
+                while (!tasks.empty())
+                {
                     auto h = tasks.front();
                     tasks.pop();
 
-                    if (!h || !h.address() || h.done()) {
+                    if (!h || !h.address() || h.done()) 
+                    {
                         LOG(WARNING) << "[Scheduler] Invalid or done handle in queue, skipping";
                         continue;
                     }
 
                     auto addr = h.address();
-                    if (handle_refs.count(addr) > 0) {
+                    if (handle_refs.count(addr) > 0)
+                    {
                         local_tasks.push_back(h);
                     }
-                    else {
+                    else
+                    {
                         LOG(WARNING) << "[Scheduler] Handle not in refs, skipping " << addr;
                     }
                 }
@@ -217,13 +242,17 @@ namespace ellohim
                 LOG(VERBOSE) << "[Scheduler] Processing " << local_tasks.size() << " valid tasks";
             }
 
-            for (auto h : local_tasks) {
-                if (!h || !h.address()) {
+            for (auto h : local_tasks) 
+            {
+                if (!h || !h.address())
+                {
                     continue;
                 }
 
-                try {
-                    if (h.done()) {
+                try 
+                {
+                    if (h.done()) 
+                    {
                         LOG(VERBOSE) << "[Scheduler] Task completed before resume " << h.address();
                         continue;
                     }
@@ -232,31 +261,39 @@ namespace ellohim
                     h.resume();
                     LOG(VERBOSE) << "[Scheduler] Successfully resumed task " << h.address();
                 }
-                catch (const std::exception& e) {
+                catch (const std::exception& e)
+                {
                     LOG(FATAL) << "[Scheduler] Exception during resume " << h.address() << ": " << e.what();
                     std::lock_guard<std::mutex> lock(tasks_mutex);
                     auto addr = h.address();
                     auto it = handle_refs.find(addr);
-                    if (it != handle_refs.end()) {
+                    if (it != handle_refs.end())
+                    {
                         it->second--;
-                        if (it->second <= 0) {
+                        if (it->second <= 0) 
+                        {
                             handle_refs.erase(it);
-                            if (h && h.address()) {
+                            if (h && h.address()) 
+                            {
                                 h.destroy();
                             }
                         }
                     }
                 }
-                catch (...) {
+                catch (...)
+                {
                     LOG(FATAL) << "[Scheduler] Unknown exception during resume " << h.address();
                     std::lock_guard<std::mutex> lock(tasks_mutex);
                     auto addr = h.address();
                     auto it = handle_refs.find(addr);
-                    if (it != handle_refs.end()) {
+                    if (it != handle_refs.end())
+                    {
                         it->second--;
-                        if (it->second <= 0) {
+                        if (it->second <= 0)
+                        {
                             handle_refs.erase(it);
-                            if (h && h.address()) {
+                            if (h && h.address()) 
+                            {
                                 h.destroy();
                             }
                         }
@@ -265,37 +302,47 @@ namespace ellohim
             }
         }
 
-        void process_delayed_tasks() {
+        void process_delayed_tasks()
+        {
             auto now = Clock::now();
             std::vector<std::coroutine_handle<>> ready_tasks;
 
             {
                 std::lock_guard<std::mutex> lock(delayed_mutex);
-                while (!delayed_tasks.empty() && delayed_tasks.top().first <= now) {
+                while (!delayed_tasks.empty() && delayed_tasks.top().first <= now)
+                {
                     auto h = delayed_tasks.top().second;
                     delayed_tasks.pop();
 
-                    if (!h || h.address() == nullptr) {
+                    if (!h || h.address() == nullptr)
+                    {
                         LOG(WARNING) << "[Scheduler] Invalid delayed task handle, skipping";
                         continue;
                     }
 
-                    try {
-                        if (!h.done()) {
+                    try 
+                    {
+                        if (!h.done())
+                        {
                             ready_tasks.push_back(h);
+							LOG(VERBOSE) << "[Scheduler] Delayed task ready to run " << h.address();
                         }
-                        else {
+                        else 
+                        {
                             LOG(VERBOSE) << "[Scheduler] Delayed task already done, skipping " << h.address();
                         }
                     }
-                    catch (...) {
+                    catch (...) 
+                    {
                         LOG(FATAL) << "[Scheduler] Exception checking delayed task status, skipping";
                     }
                 }
             }
 
-            for (auto h : ready_tasks) {
-                schedule_impl(h);
+            for (auto h : ready_tasks)
+            {
+                //schedule_impl(h);
+				h.resume();
             }
         }
 
@@ -316,7 +363,8 @@ namespace ellohim
     };
 
     template <typename T>
-    struct CoroutineState {
+    struct CoroutineState
+    {
         std::atomic<bool> completed{ false };
         std::atomic<bool> exception_set{ false };
         std::optional<T> value;
@@ -324,14 +372,17 @@ namespace ellohim
         std::coroutine_handle<> continuation = nullptr;
         mutable std::mutex mutex;
 
-        T result() {
+        T result()
+        {
             std::unique_lock<std::mutex> lock(mutex);
 
             auto start = std::chrono::steady_clock::now();
-            while (!completed.load()) {
+            while (!completed.load()) 
+            {
                 lock.unlock();
 
-                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) {
+                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30))
+                {
                     throw std::runtime_error("Coroutine result timeout");
                 }
 
@@ -339,7 +390,8 @@ namespace ellohim
                 lock.lock();
             }
 
-            if (exception_set.load() && exception) {
+            if (exception_set.load() && exception) 
+            {
                 std::rethrow_exception(exception);
             }
 
@@ -352,21 +404,25 @@ namespace ellohim
     };
 
     template <>
-    struct CoroutineState<void> {
+    struct CoroutineState<void>
+    {
         std::atomic<bool> completed{ false };
         std::atomic<bool> exception_set{ false };
         std::exception_ptr exception;
         std::coroutine_handle<> continuation = nullptr;
         mutable std::mutex mutex;
 
-        void result() {
+        void result()
+        {
             std::unique_lock<std::mutex> lock(mutex);
 
             auto start = std::chrono::steady_clock::now();
-            while (!completed.load()) {
+            while (!completed.load()) 
+            {
                 lock.unlock();
 
-                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) {
+                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) 
+                {
                     throw std::runtime_error("Coroutine result timeout");
                 }
 
@@ -374,14 +430,16 @@ namespace ellohim
                 lock.lock();
             }
 
-            if (exception_set.load() && exception) {
+            if (exception_set.load() && exception)
+            {
                 std::rethrow_exception(exception);
             }
         }
     };
 
     template <typename T>
-    struct TaskPromise {
+    struct TaskPromise
+    {
         using CoroHandle = std::coroutine_handle<TaskPromise<T>>;
 
         TaskPromise() : state(std::make_shared<CoroutineState<T>>()) {}
@@ -390,20 +448,24 @@ namespace ellohim
 
         std::suspend_always initial_suspend() noexcept { return {}; }
 
-        struct FinalAwaiter {
+        struct FinalAwaiter
+        {
             bool await_ready() noexcept { return false; }
 
             template <typename Promise>
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) noexcept {
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) noexcept
+            {
                 auto& promise = h.promise();
                 std::coroutine_handle<> continuation = nullptr;
 
-                try {
+                try 
+                {
                     std::lock_guard<std::mutex> lock(promise.state->mutex);
                     promise.state->completed.store(true);
                     continuation = promise.state->continuation;
                 }
-                catch (...) {
+                catch (...)
+                {
                     promise.state->completed.store(true);
                 }
 
@@ -417,29 +479,36 @@ namespace ellohim
 
         auto final_suspend() noexcept { return FinalAwaiter{}; }
 
-        void return_value(T val) {
-            try {
+        void return_value(T val)
+        {
+            try
+            {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->value = std::move(val);
             }
-            catch (...) {
+            catch (...)
+            {
                 state->exception = std::current_exception();
                 state->exception_set.store(true);
             }
         }
 
-        void unhandled_exception() {
-            try {
+        void unhandled_exception() 
+        {
+            try
+            {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->exception = std::current_exception();
                 state->exception_set.store(true);
             }
-            catch (...) {
+            catch (...) 
+            {
                 state->exception_set.store(true);
             }
         }
 
-        T result() {
+        T result() 
+        {
             return state->result();
         }
 
@@ -447,7 +516,8 @@ namespace ellohim
     };
 
     template <>
-    struct TaskPromise<void> {
+    struct TaskPromise<void> 
+    {
         using CoroHandle = std::coroutine_handle<TaskPromise<void>>;
 
         TaskPromise() : state(std::make_shared<CoroutineState<void>>()) {}
@@ -456,7 +526,8 @@ namespace ellohim
 
         std::suspend_always initial_suspend() noexcept { return {}; }
 
-        struct FinalAwaiter {
+        struct FinalAwaiter
+        {
             bool await_ready() noexcept { return false; }
 
             template <typename Promise>
@@ -464,12 +535,14 @@ namespace ellohim
                 auto& promise = h.promise();
                 std::coroutine_handle<> continuation = nullptr;
 
-                try {
+                try
+                {
                     std::lock_guard<std::mutex> lock(promise.state->mutex);
                     promise.state->completed.store(true);
                     continuation = promise.state->continuation;
                 }
-                catch (...) {
+                catch (...) 
+                {
                     promise.state->completed.store(true);
                 }
 
@@ -485,13 +558,16 @@ namespace ellohim
 
         void return_void() {}
 
-        void unhandled_exception() {
-            try {
+        void unhandled_exception()
+        {
+            try 
+            {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->exception = std::current_exception();
                 state->exception_set.store(true);
             }
-            catch (...) {
+            catch (...) 
+            {
                 state->exception_set.store(true);
             }
         }
@@ -513,7 +589,6 @@ namespace ellohim
         {
             if (state && coro)
             {
-                fire_and_forget(std::move(*this));
                 LOG(VERBOSE) << "[Async] Created async task " << coro.address();
             }
             else 
@@ -525,12 +600,14 @@ namespace ellohim
         async(const async&) = delete;
         async& operator=(const async&) = delete;
 
-        async(async&& other) noexcept : coro(other.coro), state(other.state) {
+        async(async&& other) noexcept : coro(other.coro), state(other.state) 
+        {
             other.coro = nullptr;
             other.state = nullptr;
         }
 
-        async& operator=(async&& other) noexcept {
+        async& operator=(async&& other) noexcept
+        {
             if (this != &other) {
                 cleanup();
                 coro = other.coro;
@@ -545,37 +622,42 @@ namespace ellohim
             cleanup();
         }
 
-        bool await_ready() const noexcept {
+        bool await_ready() const noexcept
+        {
             return !state || state->completed.load();
         }
 
-        void await_suspend(std::coroutine_handle<> h) {
-            if (!state) {
+        void await_suspend(std::coroutine_handle<> h)
+        {
+            if (!state || !coro || coro.done()) 
+            {
+                // Jika ada masalah, kembalikan ke scheduler
                 scheduler::schedule(h);
+                LOG(WARNING) << "[Await] await_suspend with invalid handle or state! Parent: " << h.address();
                 return;
             }
 
-            if (!coro || coro.done()) {
-                scheduler::schedule(h);
-                return;
-            }
-
-            try {
+            try
+            {
                 std::lock_guard<std::mutex> lock(state->mutex);
-                if (!state->completed.load()) {
+                if (!state->completed.load()) 
+                {
                     state->continuation = h;
-                    scheduler::schedule(coro);
+                    scheduler::schedule(coro); //kalo dihapus semua co_await tidak akan tereksekusi
                 }
-                else {
+                else
+                {
                     scheduler::schedule(h);
                 }
             }
-            catch (...) {
+            catch (...)
+            {
                 scheduler::schedule(h);
             }
         }
 
-        T await_resume() {
+        T await_resume()
+        {
             if (!state) {
                 throw std::runtime_error("Invalid async state in await_resume");
             }
@@ -583,17 +665,21 @@ namespace ellohim
             return state->result();
         }
 
-        bool valid() const noexcept {
+        bool valid() const noexcept 
+        {
             return coro && state && !state->completed.load();
         }
 
-        bool is_ready() const noexcept {
+        bool is_ready() const noexcept
+        {
             return !state || state->completed.load();
         }
 
     private:
-        void cleanup() {
-            if (coro) {
+        void cleanup() 
+        {
+            if (coro)
+            {
                 LOG(VERBOSE) << "[Async] Cleaning up task " << coro.address();
                 scheduler::cleanup_handle(coro);
                 coro = nullptr;
@@ -611,7 +697,8 @@ namespace ellohim
 
         bool await_ready() const noexcept { return delay.count() <= 0; }
 
-        void await_suspend(std::coroutine_handle<> h) const {
+        void await_suspend(std::coroutine_handle<> h) const
+        {
             scheduler::schedule_after(delay, h);
         }
 
