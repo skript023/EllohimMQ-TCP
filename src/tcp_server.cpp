@@ -44,7 +44,8 @@ namespace ellohim
     void TcpServer::start() 
     {
         while (true) 
-        {
+		{
+			LOG(INFO) << "[Server] Waiting for new connection...";
             socket_t client_fd = accept(server_fd, nullptr, nullptr);
             if (client_fd == -1) 
             {

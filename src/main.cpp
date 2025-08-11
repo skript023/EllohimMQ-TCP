@@ -3,22 +3,36 @@
 #include "tcp_connection.hpp"
 #include "message_broker.hpp"
 #include "protocol_handler.hpp"
-
+#include <thread_pool.hpp>
 using namespace ellohim;
+
 constexpr auto PORT = 8123;
+
+static async<> test()
+{
+    LOG(INFO) << "exec test function";
+    co_await sleep_for(100ms); // Tambahkan delay untuk testing
+    LOG(INFO) << "test function completed";
+    exit(0);
+    co_return;
+}
 
 int main()
 {
     dotenv::init();
-
     logger::init("Ellohim Worker");
 
     auto broker = std::make_shared<MessageBroker>();
     auto protocol = std::make_shared<ProtocolHandler>(broker);
+    auto tp = std::make_shared<thread_pool>();
+
+    // PENTING: Pass thread pool ke scheduler
+    scheduler::start();
 
     TcpServer server(PORT);
-    broker->register_topic_handler("math.add", [](const std::string& payload) -> async<> {
-        // misalnya payload: "3,5"
+
+    broker->register_topic_handler("math.add", [](std::string payload) -> async<void> {
+        LOG(INFO) << "[Task] Starting math.add with payload: " << payload;
         auto pos = payload.find(',');
         if (pos != std::string::npos) {
             int a = std::stoi(payload.substr(0, pos));
@@ -26,25 +40,42 @@ int main()
             int sum = a + b;
             LOG(INFO) << "[Task] math.add result: " << sum;
         }
-
         co_return;
     });
 
-    broker->register_topic_handler("task.hello", [](const std::string& payload) -> async<> {
-        LOG(INFO) << "[Task] Hello task: " << payload;
+    broker->register_topic_handler("task.hello", [](std::string payload) -> async<> {
+        LOG(INFO) << "[Handler] Task started with payload: " << payload;
+
+        try 
+        {
+            LOG(INFO) << "[Handler] About to sleep";
+            co_await sleep_for(100ms);
+            LOG(INFO) << "[Handler] Sleep completed";
+
+            LOG(INFO) << "[Handler] About to call test()";
+            co_await test();
+            LOG(INFO) << "[Handler] test() completed";
+
+            LOG(INFO) << "[Handler] Task completed successfully";
+        }
+        catch (const std::exception& e)
+        {
+            LOG(FATAL) << "[Handler] Exception: " << e.what();
+        }
+        catch (...) {
+            LOG(FATAL) << "[Handler] Unknown exception";
+        }
 
         co_return;
     });
-
 
     // Event saat ada koneksi baru
     server.on_new_connection([protocol](std::shared_ptr<TcpConnection> conn) {
-        // Event saat menerima pesan
         conn->on_message([protocol, conn](const std::string& msg) {
+            LOG(INFO) << "[Server] Received message: " << msg;
             protocol->handle_message(conn, msg);
         });
 
-        // Event saat koneksi tutup
         conn->on_close([]() {
             LOG(INFO) << "[Server] Client disconnected";
         });
@@ -54,15 +85,12 @@ int main()
     });
 
     LOG(INFO) << "[Server] Broker started on port " << PORT;
-    std::thread([&server] {
-        server.start();
-    }).join();
+    server.start();
 
-    while (true)
-    {
-        scheduler::tick();
-        std::this_thread::sleep_for(100ms);
-    }
+    // Cleanup
+    scheduler::stop();
+    tp->destroy();
+    tp.reset();
 
     return 0;
 }

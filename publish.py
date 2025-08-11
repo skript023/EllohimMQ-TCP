@@ -16,5 +16,5 @@ def publish(topic, payload):
     s.close()
 
 if __name__ == "__main__":
-    publish("math.add", "3,5")
     publish("task.hello", "From Python")
+    publish("math.add", "3,5")

@@ -8,7 +8,7 @@ namespace ellohim
         // Kalau ada handler, jalankan langsung
         if (auto it = topic_handlers.find(topic); it != topic_handlers.end())
         {
-            run_sync(it->second(message));
+            it->second(message);
             return;
         }
 

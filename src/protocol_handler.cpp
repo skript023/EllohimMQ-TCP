@@ -10,7 +10,7 @@ namespace ellohim
         : broker(std::move(broker)) 
     {}
 
-    void ProtocolHandler::handle_message(std::shared_ptr<TcpConnection> conn, const std::string& data) 
+    void ProtocolHandler::handle_message(std::shared_ptr<TcpConnection> conn, const std::string& data)
     {
         try
         {
