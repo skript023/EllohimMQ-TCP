@@ -29,9 +29,9 @@ namespace ellohim
             }
         }
 
-        static void start()
+        static void start(int max_thread = 1)
         {
-            instance().start_impl();
+            instance().start_impl(max_thread);
         }
 
         static void stop()
@@ -71,7 +71,7 @@ namespace ellohim
             }
         }
 
-        void start_impl()
+        void start_impl(int max_thread)
         {
             bool expected = false;
             if (!running.compare_exchange_strong(expected, true)) 
@@ -81,27 +81,35 @@ namespace ellohim
             }
 
             LOG(VERBOSE) << "[Scheduler] Starting scheduler";
+            
+            for (size_t i = 0; i < max_thread; ++i) {
+                threads.emplace_back(std::thread(&scheduler::start_pool_impl, this, i));
+            }
+        }
 
-            g_thread_pool->queue_job([this] {
-                LOG(VERBOSE) << "[Scheduler] Scheduler thread started";
-                while (running.load())
+        void start_pool_impl(size_t id)
+        {
+            LOG(VERBOSE) << "[Scheduler] Scheduler thread started";
+            while (running.load())
+            {
+                try
                 {
-                    try
-                    {
-                        tick_impl();
-                    }
-                    catch (const std::exception& e)
-                    {
-                        LOG(FATAL) << "[Scheduler] Exception in tick: " << e.what();
-                    }
-                    catch (...)
-                    {
-                        LOG(FATAL) << "[Scheduler] Unknown exception in tick";
-                    }
-                    std::this_thread::sleep_for(1s);
+                    std::unique_lock<std::mutex> lock(threads_mutex);
+
+                    data_condition.wait(lock, [this] { return !running.load() || !tasks.empty() || !delayed_tasks.empty() || !cleanup_tasks.empty(); });
+
+                    tick_impl();
                 }
-                LOG(VERBOSE) << "[Scheduler] Scheduler thread stopped";
-            });
+                catch (const std::exception& e)
+                {
+                    LOG(FATAL) << "[Scheduler] Exception in tick: " << e.what();
+                }
+                catch (...)
+                {
+                    LOG(FATAL) << "[Scheduler] Unknown exception in tick";
+                }
+            }
+            LOG(VERBOSE) << "[Scheduler] Scheduler thread stopped";
         }
 
         void stop_impl()
@@ -136,6 +144,7 @@ namespace ellohim
             {
                 handle_refs[addr] = 1;
                 tasks.push(h);
+                data_condition.notify_one();
                 LOG(VERBOSE) << "[Scheduler] Scheduled new task " << addr << " (queue size: " << tasks.size() << ")";
             }
             else 
@@ -161,6 +170,7 @@ namespace ellohim
             std::lock_guard<std::mutex> lock(delayed_mutex);
             auto time = Clock::now() + delay;
             delayed_tasks.emplace(time, h);
+            data_condition.notify_one();
             LOG(VERBOSE) << "[Scheduler] Scheduled delayed task " << h.address() << " for " << delay.count() << "ms";
         }
 
@@ -168,6 +178,7 @@ namespace ellohim
         {
             std::lock_guard<std::mutex> lock(cleanup_mutex);
             cleanup_tasks.push(h);
+            data_condition.notify_one();
             LOG(VERBOSE) << "[Scheduler] Task signaled for cleanup " << h.address();
         }
 
@@ -359,7 +370,11 @@ namespace ellohim
         std::mutex tasks_mutex;
         std::mutex delayed_mutex;
         std::mutex cleanup_mutex;
+		std::mutex threads_mutex;
         std::atomic<bool> running{ false };
+        std::condition_variable data_condition;
+
+        std::vector<std::thread> threads;
     };
 
     template <typename T>
@@ -995,20 +1010,24 @@ namespace ellohim
 
     template <typename Func>
     void spawn_task(Func&& func) {
-        try {
+        try 
+        {
             auto task = [func = std::forward<Func>(func)]() -> async<void> {
-                try {
+                try 
+                {
                     co_await func();
                 }
-                catch (const std::exception& e) {
+                catch (const std::exception& e)
+                {
                     LOG(FATAL) << "[spawn_task] Exception: " << e.what();
                     throw;
                 }
-                catch (...) {
+                catch (...) 
+                {
                     LOG(FATAL) << "[spawn_task] Unknown exception";
                     throw;
                 }
-                }();
+            }();
 
             fire_and_forget(std::move(task));
         }

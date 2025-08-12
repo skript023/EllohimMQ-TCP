@@ -18,15 +18,12 @@ static async<int> test()
 
 int main()
 {
+    scheduler::start();
     dotenv::init();
     logger::init("Ellohim Worker");
 
     auto broker = std::make_shared<MessageBroker>();
     auto protocol = std::make_shared<ProtocolHandler>(broker);
-    auto tp = std::make_shared<thread_pool>();
-
-    // PENTING: Pass thread pool ke scheduler
-    scheduler::start();
 
     TcpServer server(PORT);
 
@@ -58,7 +55,7 @@ int main()
             LOG(INFO) << "[Handler] About to sleep";
             for (size_t i = 0; i < 10; i++)
             {
-				LOG(INFO) << "[Handler] Sleeping for 1 second, iteration " << i + 1;    
+				LOG(INFO) << "[Handler] Sleeping for 1 second, iteration " << i + 1;
                 co_await sleep_for(1s);
             }
             LOG(INFO) << "[Handler] Sleep completed";
@@ -97,8 +94,6 @@ int main()
 
     // Cleanup
     scheduler::stop();
-    tp->destroy();
-    tp.reset();
 
     return 0;
 }
