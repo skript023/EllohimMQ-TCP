@@ -80,10 +80,10 @@ namespace ellohim
                 return;
             }
 
-            LOG(INFO) << "[Scheduler] Starting scheduler";
+            LOG(VERBOSE) << "[Scheduler] Starting scheduler";
 
             g_thread_pool->queue_job([this] {
-                LOG(INFO) << "[Scheduler] Scheduler thread started";
+                LOG(VERBOSE) << "[Scheduler] Scheduler thread started";
                 while (running.load())
                 {
                     try
@@ -98,9 +98,9 @@ namespace ellohim
                     {
                         LOG(FATAL) << "[Scheduler] Unknown exception in tick";
                     }
-                    std::this_thread::yield();
+                    std::this_thread::sleep_for(1s);
                 }
-                LOG(INFO) << "[Scheduler] Scheduler thread stopped";
+                LOG(VERBOSE) << "[Scheduler] Scheduler thread stopped";
             });
         }
 
@@ -201,7 +201,7 @@ namespace ellohim
                         handle_refs.erase(it);
                         if (h && h.address())
                         {
-                            LOG(INFO) << "[Scheduler] Destroying coroutine handle " << addr;
+                            LOG(VERBOSE) << "[Scheduler] Destroying coroutine handle " << addr;
                             h.destroy();
                         }
                     }
@@ -370,32 +370,22 @@ namespace ellohim
         std::optional<T> value;
         std::exception_ptr exception;
         std::coroutine_handle<> continuation = nullptr;
+        std::function<void(T)> on_completed = nullptr;
         mutable std::mutex mutex;
+        mutable std::condition_variable cv; // Menambahkan condition_variable
 
         T result()
         {
             std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [this] { return completed.load(); }); // Menunggu dengan efisien
 
-            auto start = std::chrono::steady_clock::now();
-            while (!completed.load()) 
-            {
-                lock.unlock();
-
-                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30))
-                {
-                    throw std::runtime_error("Coroutine result timeout");
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                lock.lock();
-            }
-
-            if (exception_set.load() && exception) 
+            if (exception_set.load() && exception)
             {
                 std::rethrow_exception(exception);
             }
 
-            if (!value.has_value()) {
+            if (!value.has_value())
+            {
                 throw std::runtime_error("Coroutine completed but no value set");
             }
 
@@ -410,25 +400,14 @@ namespace ellohim
         std::atomic<bool> exception_set{ false };
         std::exception_ptr exception;
         std::coroutine_handle<> continuation = nullptr;
+        std::function<void()> on_completed = nullptr;
         mutable std::mutex mutex;
+        mutable std::condition_variable cv;
 
         void result()
         {
             std::unique_lock<std::mutex> lock(mutex);
-
-            auto start = std::chrono::steady_clock::now();
-            while (!completed.load()) 
-            {
-                lock.unlock();
-
-                if (std::chrono::steady_clock::now() - start > std::chrono::seconds(30)) 
-                {
-                    throw std::runtime_error("Coroutine result timeout");
-                }
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                lock.lock();
-            }
+            cv.wait(lock, [this] { return completed.load(); });
 
             if (exception_set.load() && exception)
             {
@@ -441,6 +420,7 @@ namespace ellohim
     struct TaskPromise
     {
         using CoroHandle = std::coroutine_handle<TaskPromise<T>>;
+        std::shared_ptr<CoroutineState<T>> state;
 
         TaskPromise() : state(std::make_shared<CoroutineState<T>>()) {}
 
@@ -458,15 +438,23 @@ namespace ellohim
                 auto& promise = h.promise();
                 std::coroutine_handle<> continuation = nullptr;
 
-                try 
+                try
                 {
                     std::lock_guard<std::mutex> lock(promise.state->mutex);
                     promise.state->completed.store(true);
                     continuation = promise.state->continuation;
+                    promise.state->cv.notify_all(); // Memberi sinyal kepada thread yang menunggu
+
+                    // Panggil callback setelah coroutine selesai, dengan nilai yang sudah terisi
+                    if (promise.state->on_completed && promise.state->value.has_value()) 
+                    {
+                        std::invoke(promise.state->on_completed, promise.state->value.value());
+                    }
                 }
                 catch (...)
                 {
                     promise.state->completed.store(true);
+                    promise.state->cv.notify_all();
                 }
 
                 scheduler::cleanup_handle(h);
@@ -493,7 +481,7 @@ namespace ellohim
             }
         }
 
-        void unhandled_exception() 
+        void unhandled_exception()
         {
             try
             {
@@ -501,24 +489,23 @@ namespace ellohim
                 state->exception = std::current_exception();
                 state->exception_set.store(true);
             }
-            catch (...) 
+            catch (...)
             {
                 state->exception_set.store(true);
             }
         }
 
-        T result() 
+        T result()
         {
             return state->result();
         }
-
-        std::shared_ptr<CoroutineState<T>> state;
     };
 
     template <>
-    struct TaskPromise<void> 
+    struct TaskPromise<void>
     {
         using CoroHandle = std::coroutine_handle<TaskPromise<void>>;
+        std::shared_ptr<CoroutineState<void>> state;
 
         TaskPromise() : state(std::make_shared<CoroutineState<void>>()) {}
 
@@ -531,7 +518,8 @@ namespace ellohim
             bool await_ready() noexcept { return false; }
 
             template <typename Promise>
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) noexcept {
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) noexcept
+            {
                 auto& promise = h.promise();
                 std::coroutine_handle<> continuation = nullptr;
 
@@ -540,14 +528,20 @@ namespace ellohim
                     std::lock_guard<std::mutex> lock(promise.state->mutex);
                     promise.state->completed.store(true);
                     continuation = promise.state->continuation;
+                    promise.state->cv.notify_all();
+
+                    if (promise.state->on_completed)
+                    {
+						std::invoke(promise.state->on_completed);
+                    }
                 }
-                catch (...) 
+                catch (...)
                 {
                     promise.state->completed.store(true);
+                    promise.state->cv.notify_all();
                 }
 
                 scheduler::cleanup_handle(h);
-
                 return continuation ? continuation : std::noop_coroutine();
             }
 
@@ -560,23 +554,22 @@ namespace ellohim
 
         void unhandled_exception()
         {
-            try 
+            try
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
                 state->exception = std::current_exception();
                 state->exception_set.store(true);
             }
-            catch (...) 
+            catch (...)
             {
                 state->exception_set.store(true);
             }
         }
 
-        void result() {
+        void result()
+        {
             state->result();
         }
-
-        std::shared_ptr<CoroutineState<void>> state;
     };
 
     template <typename T = void>
@@ -597,6 +590,11 @@ namespace ellohim
             }
         }
 
+        ~async()
+        {
+            cleanup();
+        }
+
         async(const async&) = delete;
         async& operator=(const async&) = delete;
 
@@ -608,7 +606,8 @@ namespace ellohim
 
         async& operator=(async&& other) noexcept
         {
-            if (this != &other) {
+            if (this != &other) 
+            {
                 cleanup();
                 coro = other.coro;
                 state = other.state;
@@ -618,8 +617,52 @@ namespace ellohim
             return *this;
         }
 
-        ~async() {
-            cleanup();
+        // operator() tanpa parameter → langsung schedule
+        void operator()()
+        {
+            if (coro && state)
+            {
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        // operator() dengan parameter
+        template <typename... Args>
+        void operator()(Args&&... args)
+        {
+            if (coro && state) 
+            {
+                // simpan args ke dalam state atau oper ke scheduler kalau dibutuhkan
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        /*
+        Register it to scheduler
+        */
+        void detach()
+        {
+            if (coro && state)
+            {
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        void then(std::function<void(T)> callback)
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->on_completed = std::move(callback);
+            if (state->completed.load()) {
+                state->on_completed(state->result());
+            }
+
+            detach();
         }
 
         bool await_ready() const noexcept
@@ -691,6 +734,169 @@ namespace ellohim
         handle_type coro = nullptr;
         std::shared_ptr<CoroutineState<T>> state = nullptr;
     };
+    
+    template <>
+    struct async<void>
+    {
+        using promise_type = TaskPromise<void>;
+        using handle_type = std::coroutine_handle<promise_type>;
+
+        async(handle_type h) : coro(h), state(h ? h.promise().state : nullptr)
+        {
+            if (state && coro)
+            {
+                LOG(VERBOSE) << "[Async] Created async task " << coro.address();
+            }
+            else 
+            {
+                LOG(FATAL) << "[Async] Failed to create async task - invalid handle or state";
+            }
+        }
+
+        ~async()
+        {
+            cleanup();
+        }
+
+        async(const async&) = delete;
+        async& operator=(const async&) = delete;
+
+        async(async&& other) noexcept : coro(other.coro), state(other.state) 
+        {
+            other.coro = nullptr;
+            other.state = nullptr;
+        }
+
+        async& operator=(async&& other) noexcept
+        {
+            if (this != &other) 
+            {
+                cleanup();
+                coro = other.coro;
+                state = other.state;
+                other.coro = nullptr;
+                other.state = nullptr;
+            }
+            return *this;
+        }
+
+        // operator() tanpa parameter → langsung schedule
+        void operator()()
+        {
+            if (coro && state)
+            {
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        // operator() dengan parameter
+        template <typename... Args>
+        void operator()(Args&&... args)
+        {
+            if (coro && state) 
+            {
+                // simpan args ke dalam state atau oper ke scheduler kalau dibutuhkan
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        /*
+        Register it to scheduler
+        */
+        void detach()
+        {
+            if (coro && state)
+            {
+                scheduler::schedule(coro);
+                coro = nullptr;
+                state = nullptr;
+            }
+        }
+
+        void then(std::function<void()> callback)
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->on_completed = std::move(callback);
+            if (state->completed.load()) {
+                state->on_completed();
+            }
+
+			detach();
+        }
+
+        bool await_ready() const noexcept
+        {
+            return !state || state->completed.load();
+        }
+
+        void await_suspend(std::coroutine_handle<> h)
+        {
+            if (!state || !coro || coro.done()) 
+            {
+                // Jika ada masalah, kembalikan ke scheduler
+                scheduler::schedule(h);
+                LOG(WARNING) << "[Await] await_suspend with invalid handle or state! Parent: " << h.address();
+                return;
+            }
+
+            try
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                if (!state->completed.load()) 
+                {
+                    state->continuation = h;
+                    scheduler::schedule(coro); //kalo dihapus semua co_await tidak akan tereksekusi
+                }
+                else
+                {
+                    scheduler::schedule(h);
+                }
+            }
+            catch (...)
+            {
+                scheduler::schedule(h);
+            }
+        }
+
+        void await_resume()
+        {
+            if (!state) {
+                throw std::runtime_error("Invalid async state in await_resume");
+            }
+
+            return state->result();
+        }
+
+        bool valid() const noexcept 
+        {
+            return coro && state && !state->completed.load();
+        }
+
+        bool is_ready() const noexcept
+        {
+            return !state || state->completed.load();
+        }
+
+    private:
+        void cleanup() 
+        {
+            if (coro)
+            {
+                LOG(VERBOSE) << "[Async] Cleaning up task " << coro.address();
+                scheduler::cleanup_handle(coro);
+                coro = nullptr;
+            }
+            state = nullptr;
+        }
+
+    public:
+        handle_type coro = nullptr;
+        std::shared_ptr<CoroutineState<void>> state = nullptr;
+    };
 
     struct SleepAwaiter {
         std::chrono::milliseconds delay;
@@ -725,12 +931,12 @@ namespace ellohim
             return;
         }
 
-        LOG(INFO) << "[fire_and_forget] Starting background task " << task.coro.address();
+        LOG(VERBOSE) << "[fire_and_forget] Starting background task " << task.coro.address();
 
         try
         {
             scheduler::schedule(task.coro);
-            LOG(INFO) << "[fire_and_forget] Task scheduled successfully " << task.coro.address();
+            LOG(VERBOSE) << "[fire_and_forget] Task scheduled successfully " << task.coro.address();
         }
         catch (const std::exception& e) 
         {
@@ -749,7 +955,7 @@ namespace ellohim
             throw std::runtime_error("Invalid coroutine handle in run_sync");
         }
 
-        LOG(INFO) << "[run_sync] Starting task " << task.coro.address();
+        LOG(VERBOSE) << "[run_sync] Starting task " << task.coro.address();
 
         try {
             scheduler::schedule(task.coro);
@@ -761,7 +967,7 @@ namespace ellohim
 
         scheduler::run();
 
-        LOG(INFO) << "[run_sync] Task completed, getting result";
+        LOG(VERBOSE) << "[run_sync] Task completed, getting result";
         return task.await_resume();
     }
 
@@ -771,7 +977,7 @@ namespace ellohim
             throw std::runtime_error("Invalid coroutine handle in run_sync");
         }
 
-        LOG(INFO) << "[run_sync] Starting void task " << task.coro.address();
+        LOG(VERBOSE) << "[run_sync] Starting void task " << task.coro.address();
 
         try {
             scheduler::schedule(task.coro);
@@ -783,7 +989,7 @@ namespace ellohim
 
         scheduler::run();
 
-        LOG(INFO) << "[run_sync] Void task completed";
+        LOG(VERBOSE) << "[run_sync] Void task completed";
         task.await_resume();
     }
 

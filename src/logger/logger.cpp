@@ -29,8 +29,8 @@ namespace ellohim
         //spdlog::register_logger(spd_logger_);
 
         // Set level default (misal: trace)
-        spd_logger_->set_level(spdlog::level::trace);
-        spd_logger_->flush_on(spdlog::level::trace);
+        spd_logger_->set_level(spdlog::level::info);
+        spd_logger_->flush_on(spdlog::level::info);
     }
     logger::LogStream::LogStream(std::shared_ptr<spdlog::logger> logger_ptr, spdlog::level::level_enum level, std::source_location location) : logger_(logger_ptr), level_(level)
     {

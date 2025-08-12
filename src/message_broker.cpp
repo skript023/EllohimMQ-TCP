@@ -8,8 +8,7 @@ namespace ellohim
         // Kalau ada handler, jalankan langsung
         if (auto it = topic_handlers.find(topic); it != topic_handlers.end())
         {
-            auto task = it->second(message);
-            fire_and_forget(std::move(task));
+            it->second(message).detach();
             return;
         }
 
