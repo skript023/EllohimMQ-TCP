@@ -185,8 +185,8 @@ namespace ellohim
         void tick_impl()
         {
             process_cleanup_tasks();
-            process_immediate_tasks();
             process_delayed_tasks();
+            process_immediate_tasks();
         }
 
         void process_cleanup_tasks() {
