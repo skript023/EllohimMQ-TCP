@@ -27,6 +27,7 @@ file(GLOB_RECURSE SRC_MAIN
 # Compiler options for MSVC and others
 if (MSVC)
   add_compile_options(/bigobj)
+  add_compile_options(/utf-8)
 else ()
   #add_compile_options(-Wa,-mbig-obj)
 endif ()

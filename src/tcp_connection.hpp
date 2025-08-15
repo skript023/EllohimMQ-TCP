@@ -18,9 +18,9 @@ namespace ellohim
         void on_message(ReadHandler handler);
         void on_close(CloseHandler handler);
 
-    private:
-        socket_t sock_fd;
         ReadHandler read_handler;
         CloseHandler close_handler;
+    private:
+        socket_t sock_fd;
     };
 }
