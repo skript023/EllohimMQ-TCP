@@ -8,7 +8,7 @@ namespace ellohim
         // Kalau ada handler, jalankan langsung
         if (auto it = topic_handlers.find(topic); it != topic_handlers.end())
         {
-            it->second(message).detach();
+            it->second(message);
             return;
         }
 

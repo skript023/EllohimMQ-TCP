@@ -18,7 +18,7 @@ static async<int> test()
 
 int main()
 {
-    scheduler::start();
+    scheduler::start(2);
     dotenv::init();
     logger::init("Ellohim Worker");
 
@@ -53,11 +53,12 @@ int main()
         try 
         {
             LOG(INFO) << "[Handler] About to sleep";
-            for (size_t i = 0; i < 10; i++)
+            /*for (size_t i = 0; i < 10; i++)
             {
 				LOG(INFO) << "[Handler] Sleeping for 1 second, iteration " << i + 1;
                 co_await sleep_for(1s);
-            }
+            }*/
+            co_await sleep_for(2s);
             LOG(INFO) << "[Handler] Sleep completed";
 
             LOG(INFO) << "[Handler] Task completed successfully";
