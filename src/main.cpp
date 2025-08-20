@@ -18,9 +18,10 @@ static async<int> test()
 
 int main()
 {
+    file_manager::init("./");
     scheduler::start(2);
     dotenv::init();
-    logger::init("Ellohim Worker");
+    logger::init(file_manager::get_project_file("./cout.log"));
 
     auto broker = std::make_shared<MessageBroker>();
     auto protocol = std::make_shared<ProtocolHandler>(broker);

@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
+#include <file_manager.hpp>
 
 #define TRACE spdlog::level::level_enum::trace
 #define VERBOSE spdlog::level::level_enum::debug
@@ -12,27 +13,33 @@
 
 namespace ellohim
 {
-    class logger {
+    class logger 
+    {
     public:
         // --- Kelas Bersarang LogStream ---
         // Kelas ini bertanggung jawab untuk membangun pesan dan mengirimkannya ke spdlog
-        class LogStream {
+        class LogStream
+        {
         public:
             // Constructor: Menerima shared_ptr ke spdlog::logger dan level log
             LogStream(std::shared_ptr<spdlog::logger> logger_ptr, spdlog::level::level_enum level, std::source_location location = std::source_location::current());
 
             // Destructor: Ini adalah titik di mana pesan log akhir dikirimkan ke spdlog
-            ~LogStream() {
-                if (logger_ && logger_->should_log(level_)) {
+            ~LogStream() 
+            {
+                if (logger_ && logger_->should_log(level_)) 
+                {
                     logger_->log(level_, ss_.str()); // spdlog bisa menerima std::string
                 }
             }
 
             // Operator<< overload: Memungkinkan chaining untuk membangun pesan
             template<typename T>
-            LogStream& operator<<(const T& value) {
+            LogStream& operator<<(const T& value) 
+            {
                 // Hanya tambahkan ke stringstream jika logger ada dan levelnya sesuai
-                if (logger_ && logger_->should_log(level_)) {
+                if (logger_ && logger_->should_log(level_)) 
+                {
                     ss_ << value;
                 }
                 return *this; // Kembalikan referensi ke objek itu sendiri untuk chaining
@@ -44,10 +51,11 @@ namespace ellohim
             std::stringstream ss_;
         };
         // --- Akhir Kelas Bersarang LogStream ---
-
+        void create_backup();
     public:
         // Fungsi inisialisasi statis
-        static void init(std::string_view name) {
+        static void init(file name)
+        {
             instance().init_impl(name);
         }
 
@@ -69,9 +77,10 @@ namespace ellohim
     private:
         // shared_ptr untuk spdlog::logger
         std::shared_ptr<spdlog::logger> spd_logger_;
+        file m_file;
 
         // Implementasi inisialisasi
-        void init_impl(std::string_view name);
+        void init_impl(file name);
 
         // Konstruktor pribadi untuk Singleton pattern
         logger() = default;

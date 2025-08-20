@@ -112,14 +112,15 @@ namespace ellohim
                 std::unique_lock<std::mutex> lock(tasks_mutex);
                 data_condition.wait(lock, [this] {
                     return !running.load() || !tasks.empty() || !delayed_tasks.empty() || !cleanup_tasks.empty();
-                    });
+                });
 
                 if (!running.load())
                 {
                     return;
                 }
 
-                if (!tasks.empty()) {
+                if (!tasks.empty())
+                {
                     h = tasks.front();
                     tasks.pop();
                 }
@@ -367,7 +368,6 @@ namespace ellohim
                     if (!h.done()) 
                     {
                         tasks.push(h);
-                        data_condition.notify_one();
                         LOG(VERBOSE) << "[Scheduler] Tugas tertunda " << h.address() << " dipindahkan ke antrean segera.";
                     }
                     else 
@@ -375,6 +375,8 @@ namespace ellohim
                         LOG(VERBOSE) << "[Scheduler] Tugas tertunda sudah selesai, melewati " << h.address();
                     }
                 }
+
+                data_condition.notify_all();
             }
         }
 
