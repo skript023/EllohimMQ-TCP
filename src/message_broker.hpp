@@ -13,7 +13,7 @@ namespace ellohim
 
     class MessageBroker
     {
-        using TopicHandler = std::function<async<void>(const std::string&)>;
+        using TopicHandler = std::function<AsyncTask(const std::string&)>;
         std::unordered_map<std::string, TopicHandler> topic_handlers;
     public:
         void publish(const std::string& topic, const std::string& message);

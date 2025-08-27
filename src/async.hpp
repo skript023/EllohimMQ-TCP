@@ -3,18 +3,14 @@
 
 namespace ellohim
 {
-    // Deklarasi maju untuk struct async
+    // Forward declaration for async struct
     template <typename T>
     struct async;
 
     /**
      * @class scheduler
-     * @brief Implementasi scheduler untuk coroutine C++20.
-     * * Scheduler ini mengelola tiga jenis antrean tugas:
-     * - Antrean tugas segera (tasks): Untuk tugas yang siap dijalankan.
-     * - Antrean tugas tertunda (delayed_tasks): Untuk tugas yang dijadwalkan untuk dijalankan setelah jeda waktu tertentu.
-     * - Antrean pembersihan (cleanup_tasks): Untuk menghancurkan handle coroutine yang telah selesai.
-     * * Scheduler ini dapat berjalan dalam mode sinkron (single-threaded) atau multi-threaded.
+     * @brief A scheduler for C++20 coroutines with Job Stealing.
+     * This version optimizes delayed task processing.
      */
     class scheduler
     {
@@ -22,11 +18,11 @@ namespace ellohim
         using TimePoint = Clock::time_point;
 
     public:
-        // --- Metode Publik (Antarmuka Pengguna) ---
+        // --- Public Methods (User Interface) ---
 
         /**
-         * @brief Menjadwalkan coroutine untuk segera dijalankan.
-         * @param h Handle coroutine yang akan dijadwalkan.
+         * @brief Schedules a coroutine for immediate execution.
+         * @param h The coroutine handle to schedule.
          */
         static void schedule(std::coroutine_handle<> h)
         {
@@ -37,9 +33,9 @@ namespace ellohim
         }
 
         /**
-         * @brief Menjadwalkan coroutine untuk dijalankan setelah jeda waktu tertentu.
-         * @param delay Jeda waktu dalam milidetik.
-         * @param h Handle coroutine yang akan dijadwalkan.
+         * @brief Schedules a coroutine to run after a specific delay.
+         * @param delay The delay in milliseconds.
+         * @param h The coroutine handle to schedule.
          */
         static void schedule_after(std::chrono::milliseconds delay, std::coroutine_handle<> h)
         {
@@ -50,8 +46,8 @@ namespace ellohim
         }
 
         /**
-         * @brief Memulai scheduler dengan jumlah thread worker tertentu.
-         * @param max_thread Jumlah thread yang akan digunakan. Default-nya 1.
+         * @brief Starts the scheduler with a given number of worker threads.
+         * @param max_thread The number of threads to use. Default is 1.
          */
         static void start(int max_thread = 1)
         {
@@ -59,7 +55,7 @@ namespace ellohim
         }
 
         /**
-         * @brief Menghentikan semua thread scheduler.
+         * @brief Stops all scheduler threads.
          */
         static void stop()
         {
@@ -67,8 +63,7 @@ namespace ellohim
         }
 
         /**
-         * @brief Menjalankan scheduler dalam mode sinkron hingga semua tugas selesai.
-         * @note Metode ini memblokir thread pemanggil.
+         * @brief Runs the scheduler in synchronous mode until all tasks are complete.
          */
         static void run()
         {
@@ -76,8 +71,8 @@ namespace ellohim
         }
 
         /**
-         * @brief Menandai handle coroutine untuk pembersihan (penghancuran).
-         * @param h Handle coroutine yang akan dibersihkan.
+         * @brief Marks a coroutine handle for cleanup (destruction).
+         * @param h The handle to clean up.
          */
         static void cleanup_handle(std::coroutine_handle<> h)
         {
@@ -87,10 +82,10 @@ namespace ellohim
         }
 
     private:
-        // --- Metode Internal Scheduler ---
+        // --- Internal Scheduler Methods ---
 
         /**
-         * @brief Mengambil instance singleton dari scheduler.
+         * @brief Gets the singleton instance of the scheduler.
          */
         static scheduler& instance()
         {
@@ -99,205 +94,265 @@ namespace ellohim
         }
 
         /**
-         * @brief Memproses satu siklus scheduler (tick).
-         * * Metode ini adalah inti dari loop scheduler. Ini memproses tugas segera,
-         * tugas yang tertunda, dan tugas pembersihan. Metode ini dipanggil
-         * oleh thread worker dan `run_impl()`.
+         * @brief Main function for each worker thread, including job stealing.
+         * This version uses polling instead of a condition variable.
+         * @param thread_idx The index of the current thread.
+         * @return The next coroutine handle to run, or nullptr if none.
          */
-        void tick_impl()
+        std::coroutine_handle<> get_next_task(std::size_t thread_idx)
         {
-            // Menunggu tugas baru atau sinyal penghentian
-            std::coroutine_handle<> h;
+            // 1. Try to get a task from the local queue.
+            std::coroutine_handle<> h = nullptr;
             {
-                std::unique_lock<std::mutex> lock(tasks_mutex);
-                data_condition.wait(lock, [this] {
-                    return !running.load() || !tasks.empty() || !delayed_tasks.empty() || !cleanup_tasks.empty();
-                });
-
-                if (!running.load())
+                std::lock_guard<std::mutex> lock(*local_queue_mutexes[thread_idx]);
+                if (!local_task_queues[thread_idx].empty())
                 {
-                    return;
+                    h = local_task_queues[thread_idx].front();
+                    local_task_queues[thread_idx].pop_front();
+                    return h;
                 }
+            }
 
-                if (!tasks.empty())
+            // 2. If local queue is empty, try to steal a task from another queue.
+            for (std::size_t i = 0; i < num_threads.load(); ++i)
+            {
+                if (i == thread_idx) continue;
+
+                if (local_queue_mutexes[i]->try_lock())
                 {
-                    h = tasks.front();
-                    tasks.pop();
+                    if (!local_task_queues[i].empty())
+                    {
+                        h = local_task_queues[i].back();
+                        local_task_queues[i].pop_back();
+                        local_queue_mutexes[i]->unlock();
+                        LOG(VERBOSE) << "[Scheduler] Thread " << thread_idx << " stole a task from " << i;
+                        return h;
+                    }
+                    local_queue_mutexes[i]->unlock();
                 }
-            } // Melepas kunci
+            }
 
-            // Memproses tugas yang diambil
+            // Polling: Instead of waiting, just return nullptr if no task is found.
+            return h;
+        }
+
+        /**
+         * @brief Processes one scheduler cycle (tick) for a specific thread.
+         * @param thread_idx The index of the current thread.
+         */
+        void tick_impl(std::size_t thread_idx)
+        {
+            // Check and process delayed tasks first.
+            process_delayed_tasks_impl();
+
+            std::coroutine_handle<> h = get_next_task(thread_idx);
+
             if (h && h.address())
             {
                 try
                 {
                     if (h.done())
                     {
-                        LOG(VERBOSE) << "[Scheduler] Tugas selesai sebelum resume " << h.address();
+                        LOG(VERBOSE) << "[Scheduler] Task was already done before resume " << h.address();
                     }
-                    else {
-                        LOG(VERBOSE) << "[Scheduler] -> Melanjutkan tugas " << h.address() << "...";
+                    else
+                    {
+                        LOG(VERBOSE) << "[Scheduler] Thread " << thread_idx << " -> Resuming task " << h.address() << "...";
                         h.resume();
-                        LOG(VERBOSE) << "[Scheduler] <- Tugas " << h.address() << " berhasil dilanjutkan.";
+                        LOG(VERBOSE) << "[Scheduler] Thread " << thread_idx << " <- Task " << h.address() << " resumed successfully.";
                     }
                 }
                 catch (const std::exception& e)
                 {
-                    LOG(FATAL) << "[Scheduler] Pengecualian saat melanjutkan " << h.address() << ": " << e.what();
+                    LOG(FATAL) << "[Scheduler] Exception while resuming " << h.address() << ": " << e.what();
                     cleanup_handle_impl(h);
                 }
                 catch (...)
                 {
-                    LOG(FATAL) << "[Scheduler] Pengecualian tidak dikenal saat melanjutkan " << h.address();
+                    LOG(FATAL) << "[Scheduler] Unknown exception while resuming " << h.address();
                     cleanup_handle_impl(h);
                 }
             }
-
-            // Memproses antrean lainnya
-            process_cleanup_tasks();
-            process_delayed_tasks();
-        }
-
-        /**
-         * @brief Implementasi mode sinkron.
-         */
-        void run_impl()
-        {
-            LOG(VERBOSE) << "[Scheduler] run() dipanggil. Memproses tugas hingga semua antrean kosong.";
-            while (true)
+            else
             {
-                bool tasks_empty = tasks.empty();
-                bool delayed_empty = delayed_tasks.empty();
-                bool cleanup_empty = cleanup_tasks.empty();
-                if (tasks_empty && delayed_empty && cleanup_empty)
-                {
-                    break;
-                }
-
-                tick_impl();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                // If no task was found, process cleanup tasks and sleep for a short duration
+                // to reduce CPU usage. This is the core of the polling loop.
+                process_cleanup_tasks_impl();
+                std::this_thread::sleep_for(500ms);
             }
         }
 
         /**
-         * @brief Memulai thread worker scheduler.
+         * @brief Synchronous mode implementation.
+         */
+        void run_impl()
+        {
+            LOG(VERBOSE) << "[Scheduler] run() called. Processing tasks until all queues are empty.";
+            running.store(true);
+            num_threads.store(1);
+            local_task_queues.resize(1);
+            local_queue_mutexes.clear();
+            local_queue_mutexes.emplace_back(std::make_unique<std::mutex>());
+
+            while (true)
+            {
+                bool has_work = false;
+                {
+                    std::lock_guard<std::mutex> lock(*local_queue_mutexes[0]);
+                    if (!local_task_queues[0].empty()) {
+                        has_work = true;
+                    }
+                }
+
+                // Check all queues before sleeping
+                process_delayed_tasks_impl();
+                process_cleanup_tasks_impl();
+
+                if (has_work)
+                {
+                    tick_impl(0);
+                }
+                else
+                {
+                    if (local_task_queues[0].empty() && delayed_tasks.empty() && cleanup_tasks.empty()) {
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+            running.store(false);
+        }
+
+        /**
+         * @brief Starts the scheduler worker threads.
          */
         void start_impl(int max_thread)
         {
             bool expected = false;
             if (!running.compare_exchange_strong(expected, true))
             {
-                LOG(WARNING) << "[Scheduler] Sudah berjalan.";
+                LOG(WARNING) << "[Scheduler] Already running.";
                 return;
             }
 
-            LOG(VERBOSE) << "[Scheduler] Memulai scheduler.";
-
-            for (std::size_t i = 0; i < max_thread; ++i) {
-                threads.emplace_back(std::thread(&scheduler::start_pool_impl, this));
+            LOG(VERBOSE) << "[Scheduler] Starting scheduler.";
+            num_threads.store(max_thread);
+            local_task_queues.resize(max_thread);
+            local_queue_mutexes.clear();
+            local_queue_mutexes.reserve(max_thread);
+            for (int i = 0; i < max_thread; ++i) {
+                local_queue_mutexes.emplace_back(std::make_unique<std::mutex>());
             }
 
-            LOG(INFO) << "[Scheduler] Berhasil memulai " << max_thread << " thread scheduler.";
+            for (std::size_t i = 0; i < max_thread; ++i) {
+                threads.emplace_back(std::thread(&scheduler::start_pool_impl, this, i));
+            }
+
+            LOG(INFO) << "[Scheduler] Successfully started " << max_thread << " scheduler threads.";
         }
 
         /**
-         * @brief Fungsi utama untuk setiap thread worker.
+         * @brief Main function for each worker thread.
          */
-        void start_pool_impl()
+        void start_pool_impl(std::size_t thread_idx)
         {
             while (running.load())
             {
-                tick_impl();
+                tick_impl(thread_idx);
             }
-            LOG(VERBOSE) << "[Scheduler] Thread scheduler dihentikan.";
+            LOG(VERBOSE) << "[Scheduler] Scheduler thread stopped.";
         }
 
         /**
-         * @brief Menghentikan semua thread worker.
+         * @brief Stops all worker threads.
          */
         void stop_impl()
         {
             running.store(false);
-            data_condition.notify_all();
+            // No need to notify, threads will exit naturally due to polling.
             for (auto& t : threads) {
                 if (t.joinable()) {
                     t.join();
                 }
             }
-            LOG(INFO) << "[Scheduler] Scheduler dihentikan.";
+            threads.clear();
+            LOG(INFO) << "[Scheduler] Scheduler stopped.";
         }
 
         /**
-         * @brief Implementasi internal untuk menjadwalkan tugas segera.
+         * @brief Internal implementation for scheduling an immediate task.
          */
         void schedule_impl(std::coroutine_handle<> h)
         {
             if (!h || h.address() == nullptr)
             {
-                LOG(WARNING) << "[Scheduler] Mencoba menjadwalkan handle yang tidak valid.";
+                LOG(WARNING) << "[Scheduler] Attempting to schedule an invalid handle.";
                 return;
             }
 
             if (h.done())
             {
-                LOG(VERBOSE) << "[Scheduler] Handle sudah selesai, tidak menjadwalkan " << h.address();
+                LOG(VERBOSE) << "[Scheduler] Handle is already done, not scheduling " << h.address();
                 return;
             }
 
-            std::lock_guard<std::mutex> lock(tasks_mutex);
+            std::size_t thread_idx = next_thread_idx.fetch_add(1) % num_threads.load();
+            std::lock_guard<std::mutex> lock(*local_queue_mutexes[thread_idx]);
             auto addr = h.address();
+
+            std::lock_guard<std::mutex> refs_lock(handle_refs_mutex);
             if (handle_refs.find(addr) == handle_refs.end())
             {
                 handle_refs[addr] = 1;
-                tasks.push(h);
-                data_condition.notify_one();
-                LOG(VERBOSE) << "[Scheduler] Menjadwalkan tugas baru " << addr << " (ukuran antrean: " << tasks.size() << ")";
+                local_task_queues[thread_idx].push_back(h);
+                // No need to notify, polling threads will find the task.
+                LOG(VERBOSE) << "[Scheduler] Scheduled new task " << addr << " (queue size: " << local_task_queues[thread_idx].size() << ")";
             }
             else
             {
-                LOG(WARNING) << "[Scheduler] Handle sudah ada di antrean " << addr;
+                LOG(WARNING) << "[Scheduler] Handle is already in a queue " << addr;
             }
         }
 
         /**
-         * @brief Implementasi internal untuk menjadwalkan tugas tertunda.
+         * @brief Internal implementation for scheduling a delayed task.
          */
         void schedule_after_impl(std::chrono::milliseconds delay, std::coroutine_handle<> h)
         {
             if (!h || h.address() == nullptr)
             {
-                LOG(WARNING) << "[Scheduler] Mencoba menjadwalkan_setelah handle yang tidak valid.";
+                LOG(WARNING) << "[Scheduler] Attempting to schedule_after an invalid handle.";
                 return;
             }
 
             if (h.done())
             {
-                LOG(VERBOSE) << "[Scheduler] Handle sudah selesai, tidak menjadwalkan yang tertunda " << h.address();
+                LOG(VERBOSE) << "[Scheduler] Handle is already done, not scheduling delayed task " << h.address();
                 return;
             }
 
             std::lock_guard<std::mutex> lock(delayed_mutex);
             auto time = Clock::now() + delay;
             delayed_tasks.emplace(time, h);
-            data_condition.notify_one();
-            LOG(VERBOSE) << "[Scheduler] Menjadwalkan tugas tertunda " << h.address() << " untuk " << delay.count() << "ms";
+            // No need to notify, polling threads will find the task.
+            LOG(VERBOSE) << "[Scheduler] Scheduled delayed task " << h.address() << " for " << delay.count() << "ms";
         }
 
         /**
-         * @brief Implementasi internal untuk menandai handle agar dibersihkan.
+         * @brief Internal implementation to mark a handle for cleanup.
          */
         void cleanup_handle_impl(std::coroutine_handle<> h)
         {
             std::lock_guard<std::mutex> lock(cleanup_mutex);
             cleanup_tasks.push(h);
-            data_condition.notify_one();
-            LOG(VERBOSE) << "[Scheduler] Tugas ditandai untuk pembersihan " << h.address();
+            // No need to notify, polling threads will find the task.
+            LOG(VERBOSE) << "[Scheduler] Task marked for cleanup " << h.address();
         }
 
         /**
-         * @brief Memproses antrean pembersihan handle.
+         * @brief Processes the handle cleanup queue.
          */
-        void process_cleanup_tasks() {
+        void process_cleanup_tasks_impl() {
             std::queue<std::coroutine_handle<>> local_cleanup_tasks;
             {
                 std::lock_guard<std::mutex> lock(cleanup_mutex);
@@ -308,26 +363,24 @@ namespace ellohim
                 return;
             }
 
+            std::lock_guard<std::mutex> refs_lock(handle_refs_mutex);
+            while (!local_cleanup_tasks.empty())
             {
-                std::lock_guard<std::mutex> lock(tasks_mutex);
-                while (!local_cleanup_tasks.empty())
-                {
-                    auto h = local_cleanup_tasks.front();
-                    local_cleanup_tasks.pop();
+                auto h = local_cleanup_tasks.front();
+                local_cleanup_tasks.pop();
 
-                    auto addr = h.address();
-                    auto it = handle_refs.find(addr);
-                    if (it != handle_refs.end())
+                auto addr = h.address();
+                auto it = handle_refs.find(addr);
+                if (it != handle_refs.end())
+                {
+                    it->second--;
+                    if (it->second <= 0)
                     {
-                        it->second--;
-                        if (it->second <= 0)
+                        handle_refs.erase(it);
+                        if (h && h.address() && h.done())
                         {
-                            handle_refs.erase(it);
-                            if (h && h.address())
-                            {
-                                LOG(VERBOSE) << "[Scheduler] Menghancurkan handle coroutine " << addr;
-                                h.destroy();
-                            }
+                            LOG(VERBOSE) << "[Scheduler] Destroying coroutine handle " << addr;
+                            h.destroy();
                         }
                     }
                 }
@@ -335,18 +388,9 @@ namespace ellohim
         }
 
         /**
-         * @brief Memproses antrean tugas segera.
-         * @deprecated Sekarang digantikan oleh tick_impl().
+         * @brief Processes the delayed tasks queue.
          */
-        void process_immediate_tasks()
-        {
-            // Logika ini sekarang ada di tick_impl()
-        }
-
-        /**
-         * @brief Memproses antrean tugas yang tertunda.
-         */
-        void process_delayed_tasks()
+        void process_delayed_tasks_impl()
         {
             auto now = Clock::now();
             std::vector<std::coroutine_handle<>> ready_tasks;
@@ -359,30 +403,31 @@ namespace ellohim
                     delayed_tasks.pop();
                     ready_tasks.push_back(h);
                 }
-            } // Melepas kunci
+            } // Release the lock
 
             if (!ready_tasks.empty()) {
-                std::lock_guard<std::mutex> tasks_lock(tasks_mutex);
+                // Distribute the ready tasks to the local queues.
                 for (auto& h : ready_tasks)
                 {
-                    if (!h.done()) 
+                    if (!h.done())
                     {
-                        tasks.push(h);
-                        LOG(VERBOSE) << "[Scheduler] Tugas tertunda " << h.address() << " dipindahkan ke antrean segera.";
+                        std::size_t thread_idx = next_thread_idx.fetch_add(1) % num_threads.load();
+                        std::lock_guard<std::mutex> local_lock(*local_queue_mutexes[thread_idx]);
+                        local_task_queues[thread_idx].push_front(h);
+                        // No need to notify again, as the worker thread is already active or about to be awakened by polling.
+                        LOG(VERBOSE) << "[Scheduler] Delayed task " << h.address() << " moved to immediate queue.";
                     }
-                    else 
+                    else
                     {
-                        LOG(VERBOSE) << "[Scheduler] Tugas tertunda sudah selesai, melewati " << h.address();
+                        LOG(VERBOSE) << "[Scheduler] Delayed task was already done, skipping " << h.address();
                     }
                 }
-
-                data_condition.notify_all();
             }
         }
 
     private:
-        // --- Anggota Data ---
-        std::queue<std::coroutine_handle<>> tasks;
+        // --- Data Members ---
+        std::vector<std::deque<std::coroutine_handle<>>> local_task_queues;
         std::priority_queue<
             std::pair<TimePoint, std::coroutine_handle<>>,
             std::vector<std::pair<TimePoint, std::coroutine_handle<>>>,
@@ -391,20 +436,24 @@ namespace ellohim
         std::queue<std::coroutine_handle<>> cleanup_tasks;
         std::unordered_map<void*, int> handle_refs;
 
-        std::mutex tasks_mutex;
+        std::vector<std::unique_ptr<std::mutex>> local_queue_mutexes;
         std::mutex delayed_mutex;
         std::mutex cleanup_mutex;
+        std::mutex handle_refs_mutex;
+        std::mutex data_mutex;
         std::atomic<bool> running{ false };
-        std::condition_variable data_condition;
+        // std::condition_variable data_condition; // Dihapus karena menggunakan polling
+        std::atomic<std::size_t> num_threads{ 0 };
+        std::atomic<std::size_t> next_thread_idx{ 0 };
 
         std::vector<std::thread> threads;
     };
 
-    // --- Struktur dan Kelas Coroutine ---
+    // --- Coroutine Structures and Classes ---
 
     /**
      * @struct CoroutineState
-     * @brief Menyimpan status coroutine dan hasil pengembalian.
+     * @brief Stores the state and return value of a coroutine.
      */
     template <typename T>
     struct CoroutineState
@@ -462,7 +511,7 @@ namespace ellohim
 
     /**
      * @struct TaskPromise
-     * @brief Promise type untuk `async`.
+     * @brief Promise type for `async`.
      */
     template <typename T>
     struct TaskPromise
@@ -620,7 +669,7 @@ namespace ellohim
 
     /**
      * @struct async
-     * @brief Tipe pengembalian coroutine.
+     * @brief Coroutine return type.
      */
     template <typename T = void>
     struct async
@@ -632,13 +681,11 @@ namespace ellohim
         {
             if (state && coro)
             {
-                LOG(VERBOSE) << "[Async] Tugas async dibuat " << coro.address();
-                scheduler::schedule(coro);
-                coro = nullptr; // Mencegah penghancuran ganda
+                LOG(VERBOSE) << "[Async] async task created " << coro.address();
             }
             else
             {
-                LOG(FATAL) << "[Async] Gagal membuat tugas async - handle atau state tidak valid";
+                LOG(FATAL) << "[Async] Failed to create async task - invalid handle or state";
             }
         }
 
@@ -710,6 +757,7 @@ namespace ellohim
                 state->on_completed(state->result());
             }
 
+            detach();
         }
 
         bool await_ready() const noexcept
@@ -722,7 +770,7 @@ namespace ellohim
             if (!state || !coro || coro.done())
             {
                 scheduler::schedule(h);
-                LOG(WARNING) << "[Await] await_suspend dengan handle atau state tidak valid! Induk: " << h.address();
+                LOG(WARNING) << "[Await] await_suspend with invalid handle or state! Parent: " << h.address();
                 return;
             }
 
@@ -748,7 +796,7 @@ namespace ellohim
         T await_resume()
         {
             if (!state) {
-                throw std::runtime_error("State async tidak valid di await_resume");
+                throw std::runtime_error("Invalid async state in await_resume");
             }
 
             return state->result();
@@ -769,7 +817,7 @@ namespace ellohim
         {
             if (coro)
             {
-                LOG(VERBOSE) << "[Async] Membersihkan tugas " << coro.address();
+                LOG(VERBOSE) << "[Async] Cleaning up task " << coro.address();
                 scheduler::cleanup_handle(coro);
                 coro = nullptr;
             }
@@ -791,13 +839,11 @@ namespace ellohim
         {
             if (state && coro)
             {
-                LOG(VERBOSE) << "[Async] Tugas async dibuat " << coro.address();
-                scheduler::schedule(coro);
-                coro = nullptr;
+                LOG(VERBOSE) << "[Async] async task created " << coro.address();
             }
             else
             {
-                LOG(FATAL) << "[Async] Gagal membuat tugas async - handle atau state tidak valid";
+                LOG(FATAL) << "[Async] Failed to create async task - invalid handle or state";
             }
         }
 
@@ -869,6 +915,7 @@ namespace ellohim
                 state->on_completed();
             }
 
+            detach();
         }
 
         bool await_ready() const noexcept
@@ -881,7 +928,7 @@ namespace ellohim
             if (!state || !coro || coro.done())
             {
                 scheduler::schedule(h);
-                LOG(WARNING) << "[Await] await_suspend dengan handle atau state tidak valid! Induk: " << h.address();
+                LOG(WARNING) << "[Await] await_suspend with invalid handle or state! Parent: " << h.address();
                 return;
             }
 
@@ -907,7 +954,7 @@ namespace ellohim
         void await_resume()
         {
             if (!state) {
-                throw std::runtime_error("State async tidak valid di await_resume");
+                throw std::runtime_error("Invalid async state in await_resume");
             }
 
             return state->result();
@@ -928,7 +975,7 @@ namespace ellohim
         {
             if (coro)
             {
-                LOG(VERBOSE) << "[Async] Membersihkan tugas " << coro.address();
+                LOG(VERBOSE) << "[Async] Cleaning up task " << coro.address();
                 scheduler::cleanup_handle(coro);
                 coro = nullptr;
             }
@@ -940,11 +987,72 @@ namespace ellohim
         std::shared_ptr<CoroutineState<void>> state = nullptr;
     };
 
-    // --- Awaiter untuk Kontrol Aliran ---
+    struct AsyncTask
+    {
+        struct promise_type;
+        using handle_type = std::coroutine_handle<promise_type>;
+
+        AsyncTask() = default;
+
+        AsyncTask(handle_type h) : coro_(h)
+        {
+        }
+
+        AsyncTask(const AsyncTask&) = delete;
+
+        AsyncTask(AsyncTask&& other) noexcept
+        {
+            coro_ = other.coro_;
+            other.coro_ = nullptr;
+        }
+
+        AsyncTask& operator=(const AsyncTask&) = delete;
+
+        AsyncTask& operator=(AsyncTask&& other) noexcept
+        {
+            if (std::addressof(other) == this)
+                return *this;
+
+            coro_ = other.coro_;
+            other.coro_ = nullptr;
+            return *this;
+        }
+
+        struct promise_type
+        {
+            AsyncTask get_return_object() noexcept
+            {
+                return { std::coroutine_handle<promise_type>::from_promise(*this) };
+            }
+
+            std::suspend_never initial_suspend() const noexcept
+            {
+                return {};
+            }
+
+            void unhandled_exception()
+            {
+                LOG(FATAL) << "Exception escaping AsyncTask.";
+                std::terminate();
+            }
+
+            void return_void() noexcept
+            {
+            }
+
+            std::suspend_never final_suspend() const noexcept
+            {
+                return {};
+            }
+        };
+
+        handle_type coro_;
+    };
+    // --- Awaiters for Flow Control ---
 
     /**
      * @struct SleepAwaiter
-     * @brief Awaiter untuk menjeda eksekusi coroutine.
+     * @brief Awaiter to pause a coroutine's execution.
      */
     struct SleepAwaiter
     {
@@ -962,7 +1070,7 @@ namespace ellohim
 
     /**
      * @struct YieldAwaiter
-     * @brief Awaiter untuk mengembalikan kontrol ke scheduler.
+     * @brief Awaiter to yield control back to the scheduler.
      */
     struct YieldAwaiter
     {
@@ -977,7 +1085,7 @@ namespace ellohim
     };
 
     /**
-     * @brief Fungsi pembantu untuk yield.
+     * @brief Helper function for yielding.
      */
     inline YieldAwaiter yield()
     {
@@ -985,14 +1093,14 @@ namespace ellohim
     }
 
     /**
-     * @brief Fungsi pembantu untuk menunda eksekusi.
+     * @brief Helper function to sleep for a duration.
      */
     inline SleepAwaiter sleep_for(std::chrono::milliseconds delay)
     {
         return SleepAwaiter{ delay };
     }
 
-    // --- Fungsi Pembantu untuk Mengelola Coroutine ---
+    // --- Helper Functions for Managing Coroutines ---
 
     template <typename T>
     async<T> TaskPromise<T>::get_return_object()
@@ -1006,84 +1114,84 @@ namespace ellohim
     }
 
     /**
-     * @brief Menjalankan tugas tanpa menunggu hasilnya.
+     * @brief Runs a task without waiting for its result.
      */
     template <typename T>
     void fire_and_forget(async<T>&& task)
     {
         if (!task.coro || !task.state) {
-            LOG(FATAL) << "[fire_and_forget] Tugas tidak valid.";
+            LOG(FATAL) << "[fire_and_forget] Invalid task.";
             return;
         }
 
-        LOG(VERBOSE) << "[fire_and_forget] Memulai tugas latar belakang " << task.coro.address();
+        LOG(VERBOSE) << "[fire_and_forget] Starting background task " << task.coro.address();
 
         try
         {
             scheduler::schedule(task.coro);
-            LOG(VERBOSE) << "[fire_and_forget] Tugas berhasil dijadwalkan " << task.coro.address();
+            LOG(VERBOSE) << "[fire_and_forget] Task successfully scheduled " << task.coro.address();
         }
         catch (const std::exception& e)
         {
-            LOG(FATAL) << "[fire_and_forget] Gagal menjadwalkan tugas: " << e.what();
+            LOG(FATAL) << "[fire_and_forget] Failed to schedule task: " << e.what();
             return;
         }
 
-        // Mencegah penghancuran ganda
+        // Prevent double destruction
         task.coro = nullptr;
         task.state = nullptr;
     }
 
     /**
-     * @brief Menjalankan tugas secara sinkron dan memblokir hingga selesai.
+     * @brief Runs a task synchronously, blocking until it completes.
      */
     template <typename T>
     T run_sync(async<T> task)
     {
         if (!task.coro || !task.state) {
-            throw std::runtime_error("Handle coroutine tidak valid di run_sync");
+            throw std::runtime_error("Invalid coroutine handle in run_sync");
         }
 
-        LOG(VERBOSE) << "[run_sync] Memulai tugas " << task.coro.address();
+        LOG(VERBOSE) << "[run_sync] Starting task " << task.coro.address();
 
         try {
             scheduler::schedule(task.coro);
         }
         catch (const std::exception& e) {
-            LOG(FATAL) << "[run_sync] Gagal menjadwalkan tugas: " << e.what();
+            LOG(FATAL) << "[run_sync] Failed to schedule task: " << e.what();
             throw;
         }
 
         scheduler::run();
 
-        LOG(VERBOSE) << "[run_sync] Tugas selesai, mendapatkan hasil";
+        LOG(VERBOSE) << "[run_sync] Task finished, getting result";
         return task.await_resume();
     }
 
     inline void run_sync(async<void> task)
     {
         if (!task.coro || !task.state) {
-            throw std::runtime_error("Handle coroutine tidak valid di run_sync");
+            throw std::runtime_error("Invalid coroutine handle in run_sync");
         }
 
-        LOG(VERBOSE) << "[run_sync] Memulai tugas void " << task.coro.address();
+        LOG(VERBOSE) << "[run_sync] Starting void task " << task.coro.address();
 
         try {
             scheduler::schedule(task.coro);
         }
         catch (const std::exception& e) {
-            LOG(FATAL) << "[run_sync] Gagal menjadwalkan tugas: " << e.what();
+            LOG(FATAL) << "[run_sync] Failed to schedule task: " << e.what();
             throw;
         }
 
         scheduler::run();
 
-        LOG(VERBOSE) << "[run_sync] Tugas void selesai";
+        LOG(VERBOSE) << "[run_sync] Void task finished";
         task.await_resume();
     }
 
     /**
-     * @brief Membuat dan menjalankan tugas sebagai proses latar belakang.
+     * @brief Creates and runs a task as a background process.
      */
     template <typename Func>
     void spawn_task(Func&& func)
@@ -1097,12 +1205,12 @@ namespace ellohim
                 }
                 catch (const std::exception& e)
                 {
-                    LOG(FATAL) << "[spawn_task] Pengecualian: " << e.what();
+                    LOG(FATAL) << "[spawn_task] Exception: " << e.what();
                     throw;
                 }
                 catch (...)
                 {
-                    LOG(FATAL) << "[spawn_task] Pengecualian tidak dikenal";
+                    LOG(FATAL) << "[spawn_task] Unknown exception";
                     throw;
                 }
                 }();
@@ -1110,10 +1218,10 @@ namespace ellohim
             fire_and_forget(std::move(task));
         }
         catch (const std::exception& e) {
-            LOG(FATAL) << "[spawn_task] Gagal membuat tugas: " << e.what();
+            LOG(FATAL) << "[spawn_task] Failed to create task: " << e.what();
         }
         catch (...) {
-            LOG(FATAL) << "[spawn_task] Pengecualian tidak dikenal saat membuat tugas";
+            LOG(FATAL) << "[spawn_task] Unknown exception while creating task";
         }
     }
 }

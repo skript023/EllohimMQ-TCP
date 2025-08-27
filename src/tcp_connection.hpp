@@ -3,6 +3,9 @@
 
 namespace ellohim
 {
+    class TcpConnection;
+    using Connection = std::shared_ptr<TcpConnection>;
+
     class TcpConnection : public std::enable_shared_from_this<TcpConnection> 
     {
     public:

@@ -1,18 +1,17 @@
 #include "message_broker.hpp"
 #include "tcp_connection.hpp"
 
+#include <consumer.hpp>
+#include <consumers.hpp>
+
 namespace ellohim
 {
     void MessageBroker::publish(const std::string& topic, const std::string& message)
     {
-        // Kalau ada handler, jalankan langsung
-        if (auto it = topic_handlers.find(topic); it != topic_handlers.end())
-        {
-            it->second(message);
-            return;
-        }
-
         // Kalau tidak ada handler, push ke subscriber
+        if (auto c = consumers::get_consumer<consumer>(joaat(topic)))
+            c->call(message);
+
         topic_queues[topic].push_back({ topic, message });
         dispatch(topic);
     }
@@ -44,7 +43,12 @@ namespace ellohim
             {
                 if (auto conn = it->lock()) 
                 {
-                    conn->send(message.payload + "\n");
+                    conn->send(nlohmann::json({
+                        {"type", "publish"},
+                        {"topic", message.topic},
+                        {"payload", message.payload}
+                    }).dump());
+
                     ++it;
                 }
                 else

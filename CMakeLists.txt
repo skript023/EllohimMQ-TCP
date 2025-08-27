@@ -44,7 +44,7 @@ source_group(TREE ${SRC_DIR} PREFIX "src" FILES ${SRC_MAIN})
 # Include directories for the target
 target_include_directories(EllohimMQ PRIVATE 
   "${SRC_DIR}"
-  "${SRC_DIR}/commands"
+  "${SRC_DIR}/consumers"
   "${SRC_DIR}/logger"
   "${dotenv_SOURCE_DIR}/include/laserpants/dotenv"
   "${nlohmann_json_SOURCE_DIR}/single_include"

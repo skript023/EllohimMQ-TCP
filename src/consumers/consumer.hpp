@@ -1,5 +1,6 @@
 #pragma once
 #include "util/joaat.hpp"
+#include "tcp_connection.hpp"
 
 namespace ellohim
 {
@@ -14,11 +15,11 @@ namespace ellohim
 		int m_num_args = 0; // TODO: currently unused
 
 	protected:
-		virtual async<> on_call() = 0;
+		virtual async<> on_call(std::string payload) = 0;
 
 	public:
 		consumer(std::string name, std::string label, std::string description, int num_args = 0);
-		async<> call(std::string param);
+		AsyncTask call(std::string payload);
 
 		const std::string& get_name()
 		{
