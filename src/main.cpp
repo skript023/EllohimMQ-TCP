@@ -8,10 +8,10 @@ using namespace ellohim;
 
 constexpr auto PORT = 8123;
 
-static async<int> test()
+static Task<int> test()
 {
     LOG(INFO) << "exec test function";
-    co_await sleep_for(1s); // Tambahkan delay untuk testing
+    //co_await sleep_for(1s); // Tambahkan delay untuk testing
     LOG(INFO) << "test function completed";
     co_return 11;
 }
@@ -19,12 +19,12 @@ static async<int> test()
 int main()
 {
     file_manager::init("./");
-    scheduler::start(2);
     dotenv::init();
     logger::init(file_manager::get_project_file("./cout.log"));
 
     auto broker = std::make_shared<MessageBroker>();
     auto protocol = std::make_shared<ProtocolHandler>(broker);
+    auto thread_pool_instance = std::make_unique<thread_pool>();
 
     TcpServer server(PORT);
 
@@ -46,8 +46,8 @@ int main()
     LOG(INFO) << "[Server] Broker started on port " << PORT;
     server.start();
 
-    // Cleanup
-    scheduler::stop();
+    thread_pool_instance->destroy();
+    thread_pool_instance.reset();
 
     return 0;
 }

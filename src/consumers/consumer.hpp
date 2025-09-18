@@ -15,11 +15,11 @@ namespace ellohim
 		int m_num_args = 0; // TODO: currently unused
 
 	protected:
-		virtual async<> on_call(std::string payload) = 0;
+		virtual Task<> on_call(std::string payload) = 0;
 
 	public:
 		consumer(std::string name, std::string label, std::string description, int num_args = 0);
-		AsyncTask call(std::string payload);
+		void call(std::string payload);
 
 		const std::string& get_name()
 		{

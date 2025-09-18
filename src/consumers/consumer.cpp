@@ -1,5 +1,6 @@
 #include "consumer.hpp"
 #include "consumers.hpp"
+#include "thread_pool.hpp"
 
 namespace ellohim
 {
@@ -13,10 +14,11 @@ namespace ellohim
 		consumers::add_consumer(this);
 	}
 
-	AsyncTask consumer::call(std::string payload)
+	void consumer::call(std::string payload)
 	{
-		on_call(payload).detach();
-
-		co_return;
+		auto func = async_func([=]() -> Task<> {
+			co_await on_call(payload);
+		});
+		g_thread_pool->queue_job(func);
 	}
 }

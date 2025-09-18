@@ -7,7 +7,7 @@ namespace ellohim::topic
 	{
 		using consumer::consumer;
 
-		virtual async<> on_call(std::string payload) override
+		virtual Task<> on_call(std::string payload) override
 		{
             LOG(INFO) << "Execute topic " << get_name();
             LOG(INFO) << "[Handler] Task started with payload: " << payload;
@@ -20,7 +20,7 @@ namespace ellohim::topic
                     LOG(INFO) << "[Handler] Sleeping for 1 second, iteration " << i + 1;
                     co_await sleep_for(1s);
                 }*/
-                co_await sleep_for(2s);
+                //co_await sleep_for(2s);
                 LOG(INFO) << "[Handler] Sleep completed";
 
                 LOG(INFO) << "[Handler] Task completed successfully";

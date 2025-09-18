@@ -96,7 +96,7 @@ namespace ellohim
 
 			m_data_condition.wait(lock, [this, index]() {
 				return !m_job_stack[index].empty() || !m_accept_jobs;
-				});
+			});
 
 			if (!m_accept_jobs) [[unlikely]]
 				break;

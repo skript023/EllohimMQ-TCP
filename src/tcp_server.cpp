@@ -210,7 +210,7 @@ namespace ellohim
                 }
             }
 
-            std::this_thread::sleep_for(1s);
+            std::this_thread::sleep_for(500ms);
         }
 #elif _WIN32
         while (true)
@@ -248,7 +248,7 @@ namespace ellohim
                 }
             }
 
-            std::this_thread::sleep_for(1s);
+            std::this_thread::sleep_for(500ms);
         }
 #endif
     }
