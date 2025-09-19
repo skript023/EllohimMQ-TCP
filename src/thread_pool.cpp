@@ -68,7 +68,7 @@ namespace ellohim
 				std::unique_lock lock(m_lock);
 				m_job_stack[index].push_front({ func, location });
 
-				if (m_busy_threads >= m_job_stack.size()) [[unlikely]]
+				/*if (m_busy_threads >= m_job_stack.size()) [[unlikely]]
 				{
 					LOG(WARNING) << "Thread pool potentially starved, resizing to accommodate for load.";
 
@@ -81,7 +81,7 @@ namespace ellohim
 						++m_allocated_thread_count;
 						rescale_thread_pool();
 					}
-				}
+				}*/
 			}
 			m_data_condition.notify_all();
 		}
@@ -94,7 +94,10 @@ namespace ellohim
 			thread_pool_job job;
 			std::unique_lock lock(m_lock);
 
+			LOG(VERBOSE) << "Thread " << index << " waiting for work...";
+
 			m_data_condition.wait(lock, [this, index]() {
+				LOG(VERBOSE) << "Thread " << index << " woke up...";
 				return !m_job_stack[index].empty() || !m_accept_jobs;
 			});
 

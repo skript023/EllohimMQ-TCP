@@ -4,6 +4,8 @@
 #include "message_broker.hpp"
 #include "protocol_handler.hpp"
 #include <thread_pool.hpp>
+#include <scheduler.hpp>
+
 using namespace ellohim;
 
 constexpr auto PORT = 8123;
@@ -25,6 +27,7 @@ int main()
     auto broker = std::make_shared<MessageBroker>();
     auto protocol = std::make_shared<ProtocolHandler>(broker);
     auto thread_pool_instance = std::make_unique<thread_pool>();
+    scheduler::init();
 
     TcpServer server(PORT);
 

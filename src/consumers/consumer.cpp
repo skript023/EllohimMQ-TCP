@@ -16,9 +16,12 @@ namespace ellohim
 
 	void consumer::call(std::string payload)
 	{
-		auto func = async_func([=]() -> Task<> {
+		/*auto func = async_func([=]() -> Task<> {
 			co_await on_call(payload);
 		});
-		g_thread_pool->queue_job(func);
+		g_thread_pool->queue_job(func);*/
+		async_run([=]() -> Task<> {
+			return on_call(payload);
+		});
 	}
 }

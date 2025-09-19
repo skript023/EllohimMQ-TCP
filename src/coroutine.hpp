@@ -1,4 +1,6 @@
 #pragma once
+#include "thread_pool.hpp"
+#include "scheduler.hpp"
 
 namespace ellohim
 {
@@ -365,6 +367,77 @@ namespace ellohim
         handle_type coro_;
     };
 
+    /// Helper class that provides the infrastructure for turning callback into
+    /// coroutines
+    // The user is responsible to fill in `await_suspend()` and constructors.
+    template <typename T = void>
+    struct CallbackAwaiter
+    {
+        bool await_ready() noexcept
+        {
+            return false;
+        }
+
+        const T& await_resume() const noexcept(false)
+        {
+            // await_resume() should always be called after co_await
+            // (await_suspend()) is called. Therefore the value should always be set
+            // (or there's an exception)
+            assert(result_.has_value() == true || exception_ != nullptr);
+
+            if (exception_)
+                std::rethrow_exception(exception_);
+            return result_.value();
+        }
+
+    private:
+        // HACK: Not all desired types are default constructable. But we need the
+        // entire struct to be constructed for awaiting. std::optional takes care of
+        // that.
+        std::optional<T> result_;
+        std::exception_ptr exception_{ nullptr };
+
+    protected:
+        void setException(const std::exception_ptr& e)
+        {
+            exception_ = e;
+        }
+
+        void setValue(const T& v)
+        {
+            result_.emplace(v);
+        }
+
+        void setValue(T&& v)
+        {
+            result_.emplace(std::move(v));
+        }
+    };
+
+    template <>
+    struct CallbackAwaiter<void>
+    {
+        bool await_ready() noexcept
+        {
+            return false;
+        }
+
+        void await_resume() noexcept(false)
+        {
+            if (exception_)
+                std::rethrow_exception(exception_);
+        }
+
+    private:
+        std::exception_ptr exception_{ nullptr };
+
+    protected:
+        void setException(const std::exception_ptr& e)
+        {
+            exception_ = e;
+        }
+    };
+
     template <typename Await>
     auto sync_wait(Await&& await)
     {
@@ -427,6 +500,33 @@ namespace ellohim
         }
     }
 
+    // Converts a task (or task like) promise into std::future for old-style async
+    template <typename Await>
+    inline auto co_future(Await&& await) noexcept
+        -> std::future<await_result_t<Await>>
+    {
+        using Result = await_result_t<Await>;
+        std::promise<Result> prom;
+        auto fut = prom.get_future();
+        [](std::promise<Result> prom, Await await) -> AsyncTask {
+            try
+            {
+                if constexpr (std::is_void_v<Result>)
+                {
+                    co_await std::move(await);
+                    prom.set_value();
+                }
+                else
+                    prom.set_value(co_await std::move(await));
+            }
+            catch (...)
+            {
+                prom.set_exception(std::current_exception());
+            }
+            }(std::move(prom), std::move(await));
+        return fut;
+    }
+
     template <typename Coro>
     void async_run(Coro&& coro)
     {
@@ -450,4 +550,85 @@ namespace ellohim
             async_run(std::move(coro));
         };
     }
+
+    struct [[nodiscard]] TimerAwaiter : CallbackAwaiter<void>
+    {
+        TimerAwaiter(std::chrono::milliseconds delay): delay_(delay.count())
+        {
+        }
+
+        TimerAwaiter(int delay) : delay_(delay)
+        {
+        }
+
+        void await_suspend(std::coroutine_handle<> handle)
+        {
+			scheduler::execute_after(std::chrono::milliseconds(delay_), [=]() { handle.resume(); });
+        }
+
+    private:
+        int delay_;
+    };
+
+    /*struct [[nodiscard]] LoopAwaiter : CallbackAwaiter<void>
+    {
+        LoopAwaiter(trantor::EventLoop* workLoop,
+            std::function<void()>&& taskFunc,
+            trantor::EventLoop* resumeLoop = nullptr)
+            : workLoop_(workLoop),
+            resumeLoop_(resumeLoop),
+            taskFunc_(std::move(taskFunc))
+        {
+            assert(workLoop);
+        }
+
+        void await_suspend(std::coroutine_handle<> handle)
+        {
+            workLoop_->queueInLoop([handle, this]() {
+                try
+                {
+                    taskFunc_();
+                    if (resumeLoop_ && resumeLoop_ != workLoop_)
+                        resumeLoop_->queueInLoop([handle]() { handle.resume(); });
+                    else
+                        handle.resume();
+                }
+                catch (...)
+                {
+                    setException(std::current_exception());
+                    if (resumeLoop_ && resumeLoop_ != workLoop_)
+                        resumeLoop_->queueInLoop([handle]() { handle.resume(); });
+                    else
+                        handle.resume();
+                }
+                });
+        }
+
+    private:
+        trantor::EventLoop* workLoop_{ nullptr };
+        trantor::EventLoop* resumeLoop_{ nullptr };
+        std::function<void()> taskFunc_;
+    };*/
+
+    /*struct [[nodiscard]] SwitchThreadAwaiter : CallbackAwaiter<void>
+    {
+        explicit SwitchThreadAwaiter(trantor::EventLoop* loop) : loop_(loop)
+        {
+        }
+
+        void await_suspend(std::coroutine_handle<> handle)
+        {
+            loop_->runInLoop([handle]() { handle.resume(); });
+        }
+
+    private:
+        trantor::EventLoop* loop_;
+    };*/
+
+    inline TimerAwaiter sleepCoro(std::chrono::milliseconds delay) noexcept
+    {
+        assert(loop);
+        return { delay };
+    }
+
 }
