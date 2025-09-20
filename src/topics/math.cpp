@@ -31,9 +31,7 @@ namespace ellohim::topic
                 int sum = a + b + v;
                 LOG(INFO) << "[Task] math.add result: " << sum;
             }
-            //LOG(INFO) << "[Handler] test() called, waiting for completion";
-
-            co_return;
+            LOG(INFO) << "[Handler] test() called, waiting for completion";
         }
     };
 

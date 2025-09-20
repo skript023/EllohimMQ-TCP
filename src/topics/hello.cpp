@@ -33,8 +33,6 @@ namespace ellohim::topic
             {
                 LOG(FATAL) << "[Handler] Unknown exception";
             }
-
-            co_return;
 		}
 	};
 
